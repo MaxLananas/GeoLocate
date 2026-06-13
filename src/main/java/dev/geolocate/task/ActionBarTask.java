@@ -11,15 +11,19 @@ import java.util.Optional;
 
 public final class ActionBarTask extends BukkitRunnable {
 
+    private static final String WRAPPER_FORMAT =
+            "<dark_gray>[<gradient:#00C9FF:#92FE9D>GeoLocate</gradient>]</dark_gray> <gray>%s</gray>";
+
     private final GeoLocate plugin;
     private final MiniMessage mm;
-    private final String formatString;
+
+    // Cached coord format string — rebuilt only when decimal places change
+    private int    lastDp  = -1;
+    private String coordFmt;
 
     public ActionBarTask(GeoLocate plugin) {
         this.plugin = plugin;
-        this.mm = MiniMessage.miniMessage();
-        this.formatString = "<dark_gray>[<gradient:#00C9FF:#92FE9D>GeoLocate</gradient>]</dark_gray> "
-                + "<gray>%s</gray>";
+        this.mm     = MiniMessage.miniMessage();
     }
 
     @Override
@@ -30,7 +34,10 @@ public final class ActionBarTask extends BukkitRunnable {
         if (players.isEmpty()) return;
 
         int dp = plugin.getGeoConfig().getDecimalPlaces();
-        String coordFmt = "%." + dp + "f, %." + dp + "f";
+        if (dp != lastDp) {
+            coordFmt = "%." + dp + "f, %." + dp + "f";
+            lastDp   = dp;
+        }
 
         for (Player player : players) {
             if (!player.hasPermission("geolocate.actionbar")) continue;
@@ -40,9 +47,9 @@ public final class ActionBarTask extends BukkitRunnable {
             Optional<GeoPoint> optPoint = plugin.getAPI().getGeoPoint(player);
             if (optPoint.isEmpty()) continue;
 
-            GeoPoint point = optPoint.get();
-            String coords = String.format(coordFmt, point.getLatitude(), point.getLongitude());
-            player.sendActionBar(mm.deserialize(String.format(formatString, coords)));
+            GeoPoint point  = optPoint.get();
+            String coords   = String.format(coordFmt, point.latitude(), point.longitude());
+            player.sendActionBar(mm.deserialize(String.format(WRAPPER_FORMAT, coords)));
         }
     }
 }
