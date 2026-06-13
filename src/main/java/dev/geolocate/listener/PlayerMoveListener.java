@@ -22,43 +22,65 @@ public final class PlayerMoveListener implements Listener {
 
     private final GeoLocate plugin;
     private final MiniMessage mm;
-    private final Map<UUID, Location> lastNotifiedLocation;
+    private final Map<UUID, long[]> lastNotifiedChunk;
+    private final Map<UUID, Long> lastNotifiedTime;
 
     public PlayerMoveListener(GeoLocate plugin) {
         this.plugin = plugin;
         this.mm = MiniMessage.miniMessage();
-        this.lastNotifiedLocation = new HashMap<>();
+        this.lastNotifiedChunk = new HashMap<>();
+        this.lastNotifiedTime = new HashMap<>();
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onPlayerMove(PlayerMoveEvent event) {
-        if (!plugin.getGeoConfig().isNotifyOnMove()) return;
-
         Location from = event.getFrom();
         Location to = event.getTo();
 
         if (sameBlock(from, to)) return;
 
         Player player = event.getPlayer();
-        if (!player.hasPermission("geolocate.notify")) return;
+        UUID uuid = player.getUniqueId();
+
+        boolean wantsNotify = plugin.getGeoConfig().isNotifyOnMove()
+                && plugin.getPreferenceStorage().hasNotifyEnabled(uuid)
+                && player.hasPermission("geolocate.notify");
+
+        if (!wantsNotify) return;
         if (!plugin.getWorldMapper().isWorldMapped(player.getWorld().getName())) return;
 
         int notifyDistance = plugin.getGeoConfig().getNotifyDistance();
-        Location last = lastNotifiedLocation.get(player.getUniqueId());
+        long notifyDistSq = (long) notifyDistance * notifyDistance;
 
-        if (last != null && to.distanceSquared(last) < (notifyDistance * notifyDistance)) return;
+        long[] lastChunk = lastNotifiedChunk.get(uuid);
+        long currentChunkX = to.getBlockX() >> 4;
+        long currentChunkZ = to.getBlockZ() >> 4;
 
-        lastNotifiedLocation.put(player.getUniqueId(), to.clone());
+        if (lastChunk != null) {
+            long dCX = currentChunkX - lastChunk[0];
+            long dCZ = currentChunkZ - lastChunk[1];
+            long chunkDistSq = dCX * dCX + dCZ * dCZ;
+            long chunksNeeded = (notifyDistance >> 4);
+            if (chunkDistSq < chunksNeeded * chunksNeeded) return;
+        }
+
+        long now = System.currentTimeMillis();
+        Long lastTime = lastNotifiedTime.get(uuid);
+        if (lastTime != null && now - lastTime < 2000L) return;
 
         Optional<GeoPoint> optPoint = plugin.getAPI().getGeoPoint(to);
         if (optPoint.isEmpty()) return;
+
+        lastNotifiedChunk.put(uuid, new long[]{currentChunkX, currentChunkZ});
+        lastNotifiedTime.put(uuid, now);
 
         GeoPoint point = optPoint.get();
         String mapsLink = GoogleMapsLink.build(point, plugin.getGeoConfig().getGoogleMapsZoom());
         int dp = plugin.getGeoConfig().getDecimalPlaces();
 
         String prefix = plugin.getGeoConfig().getPrefix();
-        String coordText = String.format("%." + dp + "f, %." + dp + "f", point.getLatitude(), point.getLongitude());
+        String coordText = String.format("%." + dp + "f, %." + dp + "f",
+                point.getLatitude(), point.getLongitude());
 
         Component message = mm.deserialize(
                 prefix + "<gray>Location: <aqua>" + coordText
@@ -70,7 +92,8 @@ public final class PlayerMoveListener implements Listener {
     }
 
     public void removePlayer(UUID uuid) {
-        lastNotifiedLocation.remove(uuid);
+        lastNotifiedChunk.remove(uuid);
+        lastNotifiedTime.remove(uuid);
     }
 
     private boolean sameBlock(Location a, Location b) {
