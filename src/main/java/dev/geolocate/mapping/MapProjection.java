@@ -5,15 +5,10 @@ public enum MapProjection {
     LINEAR {
         @Override
         public GeoPoint toGeoPoint(double x, double z, WorldBoundingBox box) {
-            double adjustedX = x - box.getOffsetX();
-            double adjustedZ = z - box.getOffsetZ();
-
-            double xNorm = (adjustedX - box.getMinX()) / box.getXRange();
-            double zNorm = (adjustedZ - box.getMinZ()) / box.getZRange();
-
+            double xNorm = (x - box.getOffsetX() - box.getMinX()) / box.getXRange();
+            double zNorm = (z - box.getOffsetZ() - box.getMinZ()) / box.getZRange();
             double lon = box.getMinLon() + xNorm * box.getLonRange();
             double lat = box.getMaxLat() - zNorm * box.getLatRange();
-
             return new GeoPoint(clampLat(lat), clampLon(lon));
         }
 
@@ -21,10 +16,8 @@ public enum MapProjection {
         public double[] toMinecraft(double lat, double lon, WorldBoundingBox box) {
             double xNorm = (lon - box.getMinLon()) / box.getLonRange();
             double zNorm = (box.getMaxLat() - lat) / box.getLatRange();
-
             double x = box.getMinX() + xNorm * box.getXRange() + box.getOffsetX();
             double z = box.getMinZ() + zNorm * box.getZRange() + box.getOffsetZ();
-
             return new double[]{x, z};
         }
     },
@@ -32,24 +25,15 @@ public enum MapProjection {
     MERCATOR {
         @Override
         public GeoPoint toGeoPoint(double x, double z, WorldBoundingBox box) {
-            double adjustedX = x - box.getOffsetX();
-            double adjustedZ = z - box.getOffsetZ();
-
-            double xNorm = (adjustedX - box.getMinX()) / box.getXRange();
-            double zNorm = (adjustedZ - box.getMinZ()) / box.getZRange();
+            double xNorm = (x - box.getOffsetX() - box.getMinX()) / box.getXRange();
+            double zNorm = (z - box.getOffsetZ() - box.getMinZ()) / box.getZRange();
 
             double lon = box.getMinLon() + xNorm * box.getLonRange();
 
-            double minLatRad = Math.toRadians(box.getMinLat());
-            double maxLatRad = Math.toRadians(box.getMaxLat());
-
-            double minMerc = mercatorY(minLatRad);
-            double maxMerc = mercatorY(maxLatRad);
-            double mercRange = maxMerc - minMerc;
-
-            double mercY = maxMerc - zNorm * mercRange;
-            double latRad = 2.0 * Math.atan(Math.exp(mercY)) - Math.PI / 2.0;
-            double lat = Math.toDegrees(latRad);
+            double minMerc = mercY(Math.toRadians(box.getMinLat()));
+            double maxMerc = mercY(Math.toRadians(box.getMaxLat()));
+            double mercVal = maxMerc - zNorm * (maxMerc - minMerc);
+            double lat = Math.toDegrees(2.0 * Math.atan(Math.exp(mercVal)) - HALF_PI);
 
             return new GeoPoint(clampLat(lat), clampLon(lon));
         }
@@ -58,31 +42,25 @@ public enum MapProjection {
         public double[] toMinecraft(double lat, double lon, WorldBoundingBox box) {
             double xNorm = (lon - box.getMinLon()) / box.getLonRange();
 
-            double minLatRad = Math.toRadians(box.getMinLat());
-            double maxLatRad = Math.toRadians(box.getMaxLat());
-
-            double minMerc = mercatorY(minLatRad);
-            double maxMerc = mercatorY(maxLatRad);
+            double minMerc = mercY(Math.toRadians(box.getMinLat()));
+            double maxMerc = mercY(Math.toRadians(box.getMaxLat()));
             double mercRange = maxMerc - minMerc;
-
-            double latRad = Math.toRadians(lat);
-            double mercY = mercatorY(latRad);
-
-            double zNorm = (maxMerc - mercY) / mercRange;
+            double zNorm = (maxMerc - mercY(Math.toRadians(lat))) / mercRange;
 
             double x = box.getMinX() + xNorm * box.getXRange() + box.getOffsetX();
             double z = box.getMinZ() + zNorm * box.getZRange() + box.getOffsetZ();
-
             return new double[]{x, z};
         }
 
-        private double mercatorY(double latRad) {
-            return Math.log(Math.tan(Math.PI / 4.0 + latRad / 2.0));
+        private double mercY(double latRad) {
+            return Math.log(Math.tan(QUARTER_PI + latRad / 2.0));
         }
     };
 
-    public abstract GeoPoint toGeoPoint(double x, double z, WorldBoundingBox box);
+    private static final double HALF_PI = Math.PI / 2.0;
+    private static final double QUARTER_PI = Math.PI / 4.0;
 
+    public abstract GeoPoint toGeoPoint(double x, double z, WorldBoundingBox box);
     public abstract double[] toMinecraft(double lat, double lon, WorldBoundingBox box);
 
     protected double clampLat(double lat) {
@@ -90,10 +68,10 @@ public enum MapProjection {
     }
 
     protected double clampLon(double lon) {
-        double result = lon % 360.0;
-        if (result > 180.0) result -= 360.0;
-        if (result < -180.0) result += 360.0;
-        return result;
+        double r = lon % 360.0;
+        if (r > 180.0) r -= 360.0;
+        if (r < -180.0) r += 360.0;
+        return r;
     }
 
     public static MapProjection fromString(String name) {
