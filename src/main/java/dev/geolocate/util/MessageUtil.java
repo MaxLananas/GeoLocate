@@ -28,11 +28,11 @@ public final class MessageUtil {
     }
 
     public static Component parse(String miniMessage) {
-        return MINI_MESSAGE.miniMessage().deserialize(miniMessage);
+        return MiniMessage.miniMessage().deserialize(miniMessage);
     }
 
     public static Component parse(String miniMessage, TagResolver... resolvers) {
-        return MINI_MESSAGE.deserialize(miniMessage, resolvers);
+        return MiniMessage.miniMessage().deserialize(miniMessage, resolvers);
     }
 
     public static TagResolver placeholder(String key, String value) {
