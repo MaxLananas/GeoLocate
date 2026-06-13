@@ -87,15 +87,20 @@ jobs:
           if [ -z "$PREVIOUS_TAG" ]; then
             RAW_COMMITS=$(git log --pretty=format:"%H %s %an" HEAD)
             RANGE_LABEL="Initial release — full history"
-            COMPARE_LINE="**Full history:** [All commits](https://github.com/${REPO}/commits/${NEXT_VERSION})"
+            COMPARE_LINE="**Full diff:** [View all commits](https://github.com/${REPO}/commits/${NEXT_VERSION})"
           else
             RAW_COMMITS=$(git log --pretty=format:"%H %s %an" "${PREVIOUS_TAG}..HEAD")
             RANGE_LABEL="Changes since ${PREVIOUS_TAG}"
-            COMPARE_LINE="**Full diff:** [${PREVIOUS_TAG} -> ${NEXT_VERSION}](https://github.com/${REPO}/compare/${PREVIOUS_TAG}...${NEXT_VERSION})"
+            COMPARE_LINE="**Full diff:** [\`${PREVIOUS_TAG}\` → \`${NEXT_VERSION}\`](https://github.com/${REPO}/compare/${PREVIOUS_TAG}...${NEXT_VERSION})"
           fi
 
           COMMIT_LIST_MD=""
           COMMIT_LIST_PLAIN=""
+          FEAT_LIST=""
+          FIX_LIST=""
+          PERF_LIST=""
+          REFACTOR_LIST=""
+          OTHER_LIST=""
 
           while IFS= read -r LINE; do
             [ -z "$LINE" ] && continue
@@ -104,11 +109,59 @@ jobs:
             AUTHOR=$(echo "$LINE" | awk '{print $NF}')
             MESSAGE=$(echo "$LINE" | awk '{$1=""; $NF=""; print}' | xargs)
             URL="https://github.com/${REPO}/commit/${HASH}"
-            COMMIT_LIST_MD="${COMMIT_LIST_MD}- [\`${SHORT}\`](${URL}) **${MESSAGE}** — ${AUTHOR}"$'\n'
-            COMMIT_LIST_PLAIN="${COMMIT_LIST_PLAIN}* ${MESSAGE} (${AUTHOR})"$'\n'
+
+            ICON=""
+            TYPE=$(echo "$MESSAGE" | grep -oP '^(feat|fix|perf|refactor|chore|docs|style|test)' || true)
+            case "$TYPE" in
+              feat)     ICON="+" ;;
+              fix)      ICON="x" ;;
+              perf)     ICON="~" ;;
+              refactor) ICON=">" ;;
+              docs)     ICON="?" ;;
+              *)        ICON="-" ;;
+            esac
+
+            COMMIT_LIST_MD="${COMMIT_LIST_MD}- [\`${SHORT}\`](${URL}) ${MESSAGE} — **${AUTHOR}**"$'\n'
+            COMMIT_LIST_PLAIN="${COMMIT_LIST_PLAIN}[${TYPE:-other}] ${MESSAGE}"$'\n'
+
+            case "$TYPE" in
+              feat)     FEAT_LIST="${FEAT_LIST}${MESSAGE}"$'\n' ;;
+              fix)      FIX_LIST="${FIX_LIST}${MESSAGE}"$'\n' ;;
+              perf)     PERF_LIST="${PERF_LIST}${MESSAGE}"$'\n' ;;
+              refactor) REFACTOR_LIST="${REFACTOR_LIST}${MESSAGE}"$'\n' ;;
+              *)        OTHER_LIST="${OTHER_LIST}${MESSAGE}"$'\n' ;;
+            esac
           done <<< "$RAW_COMMITS"
 
-          PROMPT="You are a senior software engineer writing professional GitHub release notes for a Java library called GeoLocate. GeoLocate is a Paper Minecraft plugin library that converts Minecraft block coordinates to real-world latitude and longitude and generates Google Maps links. Version ${NEXT_VERSION} includes the following changes: ${COMMIT_LIST_PLAIN} Write exactly 3 short paragraphs in plain English. Be technical and precise. Do not use emojis. Do not list the commits again. Focus on what changed and why it matters for developers integrating this library. Output only the paragraphs, no headers, no markdown formatting."
+          PROMPT="You are a principal software engineer and technical writer. You are writing the official release notes for GeoLocate ${NEXT_VERSION}, a production-grade Java library for Paper Minecraft servers (1.21.10+, Java 21). GeoLocate converts Minecraft block coordinates (X/Z) to real-world WGS84 latitude/longitude using configurable Mercator or Linear projections, and generates Google Maps, OpenStreetMap and Apple Maps deep links.
+
+Your output will be published verbatim on the GitHub Releases page. It must be read by experienced Java developers who integrate this library into their plugins.
+
+Constraints:
+- Write exactly 3 paragraphs, no headers, no bullet points, no markdown formatting
+- Each paragraph must be 3 to 5 sentences
+- Be extremely technical and precise
+- Reference specific class names, method signatures, interface contracts, or algorithmic changes where relevant
+- Mention concrete improvements: thread safety, cache behavior, API surface, event contracts, data formats
+- Do not repeat the commit list
+- Do not use emojis
+- Do not use generic filler phrases like 'this release introduces' or 'we are pleased to announce'
+- Write as if you deeply understand every line of the codebase
+
+New features in this version:
+${FEAT_LIST}
+
+Bug fixes:
+${FIX_LIST}
+
+Performance improvements:
+${PERF_LIST}
+
+Refactoring:
+${REFACTOR_LIST}
+
+Other changes:
+${OTHER_LIST}"
 
           PAYLOAD=$(jq -n \
             --arg model "llama-3.1-8b-instant" \
@@ -116,8 +169,8 @@ jobs:
             '{
               model: $model,
               messages: [{ role: "user", content: $content }],
-              temperature: 0.3,
-              max_tokens: 400
+              temperature: 0.2,
+              max_tokens: 600
             }')
 
           RESPONSE=$(curl -s \
@@ -128,10 +181,10 @@ jobs:
 
           echo "Groq raw response: $RESPONSE"
 
-          AI_TEXT=$(echo "$RESPONSE" | jq -r 'if .choices then .choices[0].message.content else .error.message end // "AI description unavailable."')
+          AI_TEXT=$(echo "$RESPONSE" | jq -r 'if .choices then .choices[0].message.content else .error.message end // ""')
 
           if [ -z "$AI_TEXT" ] || [ "$AI_TEXT" = "null" ]; then
-            AI_TEXT="This release includes internal improvements and bug fixes."
+            AI_TEXT="Internal improvements and stability fixes. See commit list below for details."
           fi
 
           JITPACK_URL="https://jitpack.io/#${REPO}/${NEXT_VERSION}"
@@ -143,6 +196,10 @@ jobs:
             DISPLAY_NAME="GeoLocate ${NEXT_VERSION}"
           fi
 
+          FEAT_COUNT=$(echo "$FEAT_LIST" | grep -c . || true)
+          FIX_COUNT=$(echo "$FIX_LIST" | grep -c . || true)
+          PERF_COUNT=$(echo "$PERF_LIST" | grep -c . || true)
+
           BODY_FILE=$(mktemp)
 
           {
@@ -152,6 +209,54 @@ jobs:
             echo ""
             echo "### ${RANGE_LABEL}"
             echo ""
+
+            if [ -n "$FEAT_LIST" ]; then
+              echo "#### New Features"
+              while IFS= read -r ITEM; do
+                [ -z "$ITEM" ] && continue
+                echo "- ${ITEM}"
+              done <<< "$FEAT_LIST"
+              echo ""
+            fi
+
+            if [ -n "$FIX_LIST" ]; then
+              echo "#### Bug Fixes"
+              while IFS= read -r ITEM; do
+                [ -z "$ITEM" ] && continue
+                echo "- ${ITEM}"
+              done <<< "$FIX_LIST"
+              echo ""
+            fi
+
+            if [ -n "$PERF_LIST" ]; then
+              echo "#### Performance"
+              while IFS= read -r ITEM; do
+                [ -z "$ITEM" ] && continue
+                echo "- ${ITEM}"
+              done <<< "$PERF_LIST"
+              echo ""
+            fi
+
+            if [ -n "$REFACTOR_LIST" ]; then
+              echo "#### Refactoring"
+              while IFS= read -r ITEM; do
+                [ -z "$ITEM" ] && continue
+                echo "- ${ITEM}"
+              done <<< "$REFACTOR_LIST"
+              echo ""
+            fi
+
+            if [ -n "$OTHER_LIST" ]; then
+              echo "#### Other"
+              while IFS= read -r ITEM; do
+                [ -z "$ITEM" ] && continue
+                echo "- ${ITEM}"
+              done <<< "$OTHER_LIST"
+              echo ""
+            fi
+
+            echo "#### All Commits"
+            echo ""
             echo "$COMMIT_LIST_MD"
             echo "---"
             echo ""
@@ -159,9 +264,10 @@ jobs:
             echo ""
             echo "---"
             echo ""
-            echo "### Using GeoLocate in your project"
+            echo "### Installation"
             echo ""
             echo '```kotlin'
+            echo '// build.gradle.kts'
             echo 'repositories {'
             echo '    maven("https://jitpack.io")'
             echo '}'
@@ -171,8 +277,17 @@ jobs:
             echo '}'
             echo '```'
             echo ""
-            echo "- [JitPack](${JITPACK_URL})"
-            echo "- [Documentation / Wiki](${WIKI_URL})"
+            echo '```yaml'
+            echo '# plugin.yml'
+            echo 'depend:'
+            echo '  - GeoLocate'
+            echo '```'
+            echo ""
+            echo "| Resource | Link |"
+            echo "|---|---|"
+            echo "| JitPack | [com.github.${OWNER}:GeoLocate:${NEXT_VERSION}](${JITPACK_URL}) |"
+            echo "| Wiki | [Documentation](${WIKI_URL}) |"
+            echo "| API | [GeoLocateAPI.java](https://github.com/${REPO}/blob/main/src/main/java/dev/geolocate/api/GeoLocateAPI.java) |"
           } > "$BODY_FILE"
 
           echo "body_file=$BODY_FILE" >> $GITHUB_OUTPUT
