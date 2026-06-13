@@ -55,3 +55,11 @@ publishing {
         }
     }
 }
+
+repositories {
+    maven("https://jitpack.io")
+}
+
+dependencies {
+    compileOnly("com.github.MaxLananas:GeoLocate:v1.0.1")
+}
