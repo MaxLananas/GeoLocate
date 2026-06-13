@@ -1,0 +1,39 @@
+worlds:
+  world:
+    enabled: true
+    projection: MERCATOR
+    bounds:
+      min-lat: -85.05112878
+      max-lat: 85.05112878
+      min-lon: -180.0
+      max-lon: 180.0
+    minecraft:
+      min-x: -29999984
+      max-x: 29999984
+      min-z: -29999984
+      max-z: 29999984
+    offset:
+      x: 0
+      z: 0
+
+  world_nether:
+    enabled: false
+
+  world_the_end:
+    enabled: false
+
+settings:
+  google-maps-zoom: 15
+  show-altitude: true
+  notify-on-move: false
+  notify-distance: 100
+  cache-size: 500
+  decimal-places: 6
+
+messages:
+  prefix: "<dark_gray>[<gradient:#00C9FF:#92FE9D>GeoLocate</gradient>]</dark_gray> "
+  no-permission: "<red>You don't have permission to do that."
+  player-only: "<red>This command can only be used by players."
+  player-not-found: "<red>Player not found."
+  world-not-configured: "<yellow>This world has no geo-mapping configured."
+  reload-success: "<green>Configuration reloaded successfully."
