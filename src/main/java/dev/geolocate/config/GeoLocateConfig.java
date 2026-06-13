@@ -7,7 +7,7 @@ import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.FileConfiguration;
 
 import java.util.Collections;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 public final class GeoLocateConfig {
@@ -29,34 +29,36 @@ public final class GeoLocateConfig {
 
     public GeoLocateConfig(GeoLocate plugin) {
         this.plugin = plugin;
-        this.worldConfigs = new HashMap<>();
-        this.messages = new HashMap<>();
+        this.worldConfigs = new LinkedHashMap<>();
+        this.messages = new LinkedHashMap<>();
         load();
     }
 
     private void load() {
         FileConfiguration config = plugin.getConfig();
 
-        googleMapsZoom = config.getInt("settings.google-maps-zoom", 15);
-        showAltitude = config.getBoolean("settings.show-altitude", true);
-        notifyOnMove = config.getBoolean("settings.notify-on-move", false);
-        notifyDistance = config.getInt("settings.notify-distance", 100);
-        cacheSize = config.getInt("settings.cache-size", 500);
-        decimalPlaces = config.getInt("settings.decimal-places", 6);
-        commandCooldownSeconds = config.getInt("settings.command-cooldown-seconds", 3);
-        actionBarEnabled = config.getBoolean("settings.actionbar-enabled", false);
-        actionBarUpdateInterval = config.getInt("settings.actionbar-update-interval-ticks", 20);
-        prefix = config.getString("messages.prefix", "[GeoLocate] ");
+        googleMapsZoom            = config.getInt("settings.google-maps-zoom", 15);
+        showAltitude              = config.getBoolean("settings.show-altitude", true);
+        notifyOnMove              = config.getBoolean("settings.notify-on-move", false);
+        notifyDistance            = config.getInt("settings.notify-distance", 100);
+        cacheSize                 = config.getInt("settings.cache-size", 500);
+        decimalPlaces             = config.getInt("settings.decimal-places", 6);
+        commandCooldownSeconds    = config.getInt("settings.command-cooldown-seconds", 3);
+        actionBarEnabled          = config.getBoolean("settings.actionbar-enabled", false);
+        actionBarUpdateInterval   = config.getInt("settings.actionbar-update-interval-ticks", 20);
+        prefix                    = config.getString("messages.prefix", "[GeoLocate] ");
 
         loadMessages(config);
         loadWorlds(config);
     }
 
     private void loadMessages(FileConfiguration config) {
+        messages.clear();
         ConfigurationSection section = config.getConfigurationSection("messages");
         if (section == null) return;
         for (String key : section.getKeys(false)) {
-            messages.put(key, section.getString(key, ""));
+            String value = section.getString(key, "");
+            messages.put(key, value);
         }
     }
 
@@ -68,27 +70,22 @@ public final class GeoLocateConfig {
         for (String worldName : worlds.getKeys(false)) {
             ConfigurationSection ws = worlds.getConfigurationSection(worldName);
             if (ws == null) continue;
+            if (!ws.getBoolean("enabled", true)) continue;
 
-            boolean enabled = ws.getBoolean("enabled", true);
-            if (!enabled) continue;
-
-            MapProjection projection = MapProjection.fromString(ws.getString("projection", "LINEAR"));
-
-            double minLat = ws.getDouble("bounds.min-lat", -85.05112878);
-            double maxLat = ws.getDouble("bounds.max-lat", 85.05112878);
-            double minLon = ws.getDouble("bounds.min-lon", -180.0);
-            double maxLon = ws.getDouble("bounds.max-lon", 180.0);
-            double minX = ws.getDouble("minecraft.min-x", -29999984);
-            double maxX = ws.getDouble("minecraft.max-x", 29999984);
-            double minZ = ws.getDouble("minecraft.min-z", -29999984);
-            double maxZ = ws.getDouble("minecraft.max-z", 29999984);
-            double offsetX = ws.getDouble("offset.x", 0);
-            double offsetZ = ws.getDouble("offset.z", 0);
+            MapProjection projection = MapProjection.fromString(
+                    ws.getString("projection", "LINEAR"));
 
             WorldBoundingBox box = new WorldBoundingBox(
-                    minLat, maxLat, minLon, maxLon,
-                    minX, maxX, minZ, maxZ,
-                    offsetX, offsetZ
+                    ws.getDouble("bounds.min-lat", -85.05112878),
+                    ws.getDouble("bounds.max-lat",  85.05112878),
+                    ws.getDouble("bounds.min-lon", -180.0),
+                    ws.getDouble("bounds.max-lon",  180.0),
+                    ws.getDouble("minecraft.min-x", -29999984),
+                    ws.getDouble("minecraft.max-x",  29999984),
+                    ws.getDouble("minecraft.min-z", -29999984),
+                    ws.getDouble("minecraft.max-z",  29999984),
+                    ws.getDouble("offset.x", 0),
+                    ws.getDouble("offset.z", 0)
             );
 
             worldConfigs.put(worldName, new WorldConfig(worldName, projection, box));
@@ -103,16 +100,16 @@ public final class GeoLocateConfig {
         return Collections.unmodifiableMap(worldConfigs);
     }
 
-    public int getGoogleMapsZoom() { return googleMapsZoom; }
-    public boolean isShowAltitude() { return showAltitude; }
-    public boolean isNotifyOnMove() { return notifyOnMove; }
-    public int getNotifyDistance() { return notifyDistance; }
-    public int getCacheSize() { return cacheSize; }
-    public int getDecimalPlaces() { return decimalPlaces; }
-    public int getCommandCooldownSeconds() { return commandCooldownSeconds; }
-    public boolean isActionBarEnabled() { return actionBarEnabled; }
-    public int getActionBarUpdateInterval() { return actionBarUpdateInterval; }
-    public String getPrefix() { return prefix; }
+    public int    getGoogleMapsZoom()          { return googleMapsZoom; }
+    public boolean isShowAltitude()            { return showAltitude; }
+    public boolean isNotifyOnMove()            { return notifyOnMove; }
+    public int    getNotifyDistance()          { return notifyDistance; }
+    public int    getCacheSize()               { return cacheSize; }
+    public int    getDecimalPlaces()           { return decimalPlaces; }
+    public int    getCommandCooldownSeconds()  { return commandCooldownSeconds; }
+    public boolean isActionBarEnabled()        { return actionBarEnabled; }
+    public int    getActionBarUpdateInterval() { return actionBarUpdateInterval; }
+    public String getPrefix()                  { return prefix; }
 
     public String getMessage(String key) {
         return messages.getOrDefault(key, "");
@@ -124,13 +121,13 @@ public final class GeoLocateConfig {
         private final WorldBoundingBox boundingBox;
 
         public WorldConfig(String worldName, MapProjection projection, WorldBoundingBox boundingBox) {
-            this.worldName = worldName;
-            this.projection = projection;
+            this.worldName   = worldName;
+            this.projection  = projection;
             this.boundingBox = boundingBox;
         }
 
-        public String getWorldName() { return worldName; }
-        public MapProjection getProjection() { return projection; }
+        public String           getWorldName()   { return worldName; }
+        public MapProjection    getProjection()  { return projection; }
         public WorldBoundingBox getBoundingBox() { return boundingBox; }
     }
 }
