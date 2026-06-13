@@ -21,7 +21,7 @@ public final class PlayerGeoHistory {
     public PlayerGeoHistory(UUID playerUuid, int maxEntries) {
         this.playerUuid = playerUuid;
         this.maxEntries = maxEntries;
-        this.snapshots = new ArrayDeque<>();
+        this.snapshots  = new ArrayDeque<>(Math.min(maxEntries, 512));
     }
 
     public void record(GeoSnapshot snapshot) {
@@ -56,20 +56,22 @@ public final class PlayerGeoHistory {
     }
 
     public Optional<GeoPoint> getFarthestPointFrom(GeoPoint reference) {
-        return snapshots.stream()
-                .map(GeoSnapshot::getPoint)
-                .max((a, b) -> Double.compare(
-                        a.distanceTo(reference),
-                        b.distanceTo(reference)
-                ));
+        GeoPoint farthest = null;
+        double maxDist = -1;
+        for (GeoSnapshot s : snapshots) {
+            double d = s.getPoint().distanceTo(reference);
+            if (d > maxDist) { maxDist = d; farthest = s.getPoint(); }
+        }
+        return Optional.ofNullable(farthest);
     }
 
-    public List<GeoSnapshot> getSnapshotsInRegion(double minLat, double maxLat, double minLon, double maxLon) {
+    public List<GeoSnapshot> getSnapshotsInRegion(
+            double minLat, double maxLat, double minLon, double maxLon) {
         List<GeoSnapshot> result = new ArrayList<>();
         for (GeoSnapshot s : snapshots) {
             GeoPoint p = s.getPoint();
-            if (p.latitude() >= minLat && p.latitude() <= maxLat
-                    && p.longitude() >= minLon && p.longitude() <= maxLon) {
+            if (p.latitude()  >= minLat && p.latitude()  <= maxLat
+             && p.longitude() >= minLon && p.longitude() <= maxLon) {
                 result.add(s);
             }
         }
@@ -77,23 +79,23 @@ public final class PlayerGeoHistory {
     }
 
     public String toCSV() {
-        StringBuilder sb = new StringBuilder();
+        StringBuilder sb = new StringBuilder(snapshots.size() * 120 + 60);
         sb.append("uuid,name,lat,lon,alt,world,x,y,z,timestamp\n");
         for (GeoSnapshot s : snapshots) {
-            sb.append(s.toCSVLine()).append("\n");
+            sb.append(s.toCSVLine()).append('\n');
         }
         return sb.toString();
     }
 
     public String toGeoJSON() {
-        StringBuilder sb = new StringBuilder();
+        StringBuilder sb = new StringBuilder(snapshots.size() * 180 + 40);
         sb.append("{\"type\":\"FeatureCollection\",\"features\":[");
         boolean first = true;
         for (GeoSnapshot s : snapshots) {
-            if (!first) sb.append(",");
+            if (!first) sb.append(',');
             sb.append("{\"type\":\"Feature\",\"geometry\":{\"type\":\"Point\",\"coordinates\":[");
-            sb.append(s.getPoint().longitude()).append(",").append(s.getPoint().latitude());
-            sb.append("]},\"properties\":{\"player\":\"").append(s.getPlayerName()).append("\"");
+            sb.append(s.getPoint().longitude()).append(',').append(s.getPoint().latitude());
+            sb.append("]},\"properties\":{\"player\":\"").append(s.getPlayerName()).append('"');
             sb.append(",\"timestamp\":\"").append(s.getTimestamp()).append("\"}}");
             first = false;
         }
@@ -101,11 +103,9 @@ public final class PlayerGeoHistory {
         return sb.toString();
     }
 
-    public void clear() {
-        snapshots.clear();
-    }
+    public void clear() { snapshots.clear(); }
 
-    public int size() { return snapshots.size(); }
-    public UUID getPlayerUuid() { return playerUuid; }
-    public int getMaxEntries() { return maxEntries; }
+    public int  size()           { return snapshots.size(); }
+    public UUID getPlayerUuid()  { return playerUuid; }
+    public int  getMaxEntries()  { return maxEntries; }
 }
