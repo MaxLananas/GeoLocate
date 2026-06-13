@@ -9,9 +9,9 @@ import java.util.concurrent.locks.StampedLock;
 public final class CoordinateConverter {
 
     private final WorldBoundingBox box;
-    private final MapProjection projection;
-    private final int decimalPlaces;
-    private final int cacheSize;
+    private final MapProjection    projection;
+    private final int              decimalPlaces;
+    private final int              cacheSize;
     private final ConcurrentHashMap<Long, GeoPoint> cache;
     private final StampedLock lock;
     private final double scale;
@@ -20,16 +20,20 @@ public final class CoordinateConverter {
     private final LongAdder cacheMisses;
     private final LongAdder totalConversions;
 
-    public CoordinateConverter(WorldBoundingBox box, MapProjection projection, int decimalPlaces, int cacheSize) {
-        this.box = box;
-        this.projection = projection;
+    public CoordinateConverter(
+            WorldBoundingBox box,
+            MapProjection projection,
+            int decimalPlaces,
+            int cacheSize) {
+        this.box           = box;
+        this.projection    = projection;
         this.decimalPlaces = decimalPlaces;
-        this.cacheSize = cacheSize;
-        this.cache = new ConcurrentHashMap<>(Math.min(cacheSize, 1024));
-        this.lock = new StampedLock();
-        this.scale = Math.pow(10, decimalPlaces);
-        this.cacheHits = new LongAdder();
-        this.cacheMisses = new LongAdder();
+        this.cacheSize     = cacheSize;
+        this.cache         = new ConcurrentHashMap<>(Math.min(cacheSize, 1024));
+        this.lock          = new StampedLock();
+        this.scale         = Math.pow(10, decimalPlaces);
+        this.cacheHits     = new LongAdder();
+        this.cacheMisses   = new LongAdder();
         this.totalConversions = new LongAdder();
     }
 
@@ -41,15 +45,18 @@ public final class CoordinateConverter {
         totalConversions.increment();
         long cacheKey = buildCacheKey(x, z);
 
-        long stamp = lock.tryOptimisticRead();
+        // 1 — optimistic read (no lock acquisition if cache is warm)
+        long stamp  = lock.tryOptimisticRead();
         GeoPoint cached = cache.get(cacheKey);
         if (lock.validate(stamp) && cached != null) {
             cacheHits.increment();
-            return cached.altitude() == normalizeAltitude(y)
+            double normY = normalizeAltitude(y);
+            return cached.altitude() == normY
                     ? cached
-                    : new GeoPoint(cached.latitude(), cached.longitude(), normalizeAltitude(y));
+                    : new GeoPoint(cached.latitude(), cached.longitude(), normY);
         }
 
+        // 2 — read lock fallback
         stamp = lock.readLock();
         try {
             cached = cache.get(cacheKey);
@@ -61,14 +68,13 @@ public final class CoordinateConverter {
             lock.unlockRead(stamp);
         }
 
+        // 3 — compute and write
         cacheMisses.increment();
         GeoPoint computed = round(projection.toGeoPoint(x, z, box));
 
         stamp = lock.writeLock();
         try {
-            if (cache.size() >= cacheSize) {
-                cache.clear();
-            }
+            if (cache.size() >= cacheSize) cache.clear();
             cache.putIfAbsent(cacheKey, computed);
         } finally {
             lock.unlockWrite(stamp);
@@ -77,6 +83,10 @@ public final class CoordinateConverter {
         return new GeoPoint(computed.latitude(), computed.longitude(), normalizeAltitude(y));
     }
 
+    /**
+     * Pre-fills the cache by sampling every {@code sampleStep} blocks across
+     * the bounding box. Variables captured in the lambda are effectively final.
+     */
     public void warmUp(int sampleStep) {
         double minX = box.getMinX();
         double maxX = box.getMaxX();
@@ -87,7 +97,7 @@ public final class CoordinateConverter {
             for (double z = minZ; z <= maxZ; z += sampleStep) {
                 if (cache.size() >= cacheSize) return;
                 long key = buildCacheKey(x, z);
-                final double fx = x;
+                final double fx = x;   // effectively final capture
                 final double fz = z;
                 cache.computeIfAbsent(key, k -> round(projection.toGeoPoint(fx, fz, box)));
             }
@@ -99,7 +109,7 @@ public final class CoordinateConverter {
     }
 
     private GeoPoint round(GeoPoint point) {
-        double lat = Math.round(point.latitude() * scale) / scale;
+        double lat = Math.round(point.latitude()  * scale) / scale;
         double lon = Math.round(point.longitude() * scale) / scale;
         return new GeoPoint(lat, lon);
     }
@@ -123,12 +133,12 @@ public final class CoordinateConverter {
         }
     }
 
-    public int getCacheSize() { return cache.size(); }
-    public long getCacheHits() { return cacheHits.sum(); }
-    public long getCacheMisses() { return cacheMisses.sum(); }
-    public long getTotalConversions() { return totalConversions.sum(); }
+    public int    getCacheSize()       { return cache.size(); }
+    public long   getCacheHits()       { return cacheHits.sum(); }
+    public long   getCacheMisses()     { return cacheMisses.sum(); }
+    public long   getTotalConversions(){ return totalConversions.sum(); }
     public double getCacheHitRate() {
         long total = cacheHits.sum() + cacheMisses.sum();
-        return total == 0 ? 0 : (double) cacheHits.sum() / total * 100.0;
+        return total == 0 ? 0.0 : (double) cacheHits.sum() / total * 100.0;
     }
 }
