@@ -12,30 +12,22 @@ import java.util.Optional;
 public final class GeoLocatePlaceholders extends PlaceholderExpansion {
 
     private final GeoLocate plugin;
+    // Cached format string — rebuilt only on reload
+    private String fmtString;
 
     public GeoLocatePlaceholders(GeoLocate plugin) {
-        this.plugin = plugin;
+        this.plugin     = plugin;
+        this.fmtString  = buildFmt(plugin.getGeoConfig().getDecimalPlaces());
     }
 
-    @Override
-    public @NotNull String getIdentifier() {
-        return "geolocate";
+    private static String buildFmt(int dp) {
+        return "%." + dp + "f";
     }
 
-    @Override
-    public @NotNull String getAuthor() {
-        return "MaxLananas";
-    }
-
-    @Override
-    public @NotNull String getVersion() {
-        return plugin.getDescription().getVersion();
-    }
-
-    @Override
-    public boolean persist() {
-        return true;
-    }
+    @Override public @NotNull String getIdentifier() { return "geolocate"; }
+    @Override public @NotNull String getAuthor()     { return "MaxLananas"; }
+    @Override public @NotNull String getVersion()    { return plugin.getDescription().getVersion(); }
+    @Override public boolean persist()               { return true; }
 
     @Override
     public String onPlaceholderRequest(Player player, @NotNull String params) {
@@ -46,17 +38,20 @@ public final class GeoLocatePlaceholders extends PlaceholderExpansion {
 
         GeoPoint point = optPoint.get();
         int dp = plugin.getGeoConfig().getDecimalPlaces();
+        // Refresh format string if decimal-places config changed at runtime
+        if (fmtString.length() != dp + 3) fmtString = buildFmt(dp);
 
         return switch (params.toLowerCase()) {
-            case "latitude" -> String.format("%." + dp + "f", point.getLatitude());
-            case "longitude" -> String.format("%." + dp + "f", point.getLongitude());
-            case "altitude" -> String.valueOf(point.getAltitude());
-            case "coords" -> String.format("%." + dp + "f, %." + dp + "f",
-                    point.getLatitude(), point.getLongitude());
+            case "latitude"  -> String.format(fmtString, point.latitude());
+            case "longitude" -> String.format(fmtString, point.longitude());
+            case "altitude"  -> String.valueOf(point.altitude());
+            case "coords"    -> String.format(fmtString + ", " + fmtString,
+                                    point.latitude(), point.longitude());
             case "maps_link" -> GoogleMapsLink.build(point, plugin.getGeoConfig().getGoogleMapsZoom());
-            case "world" -> player.getWorld().getName();
-            case "is_mapped" -> plugin.getWorldMapper().isWorldMapped(player.getWorld().getName()) ? "true" : "false";
-            default -> "";
+            case "world"     -> player.getWorld().getName();
+            case "is_mapped" -> plugin.getWorldMapper().isWorldMapped(player.getWorld().getName())
+                                    ? "true" : "false";
+            default          -> "";
         };
     }
 }
