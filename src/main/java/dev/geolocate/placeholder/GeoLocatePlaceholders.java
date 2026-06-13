@@ -12,12 +12,11 @@ import java.util.Optional;
 public final class GeoLocatePlaceholders extends PlaceholderExpansion {
 
     private final GeoLocate plugin;
-    // Cached format string — rebuilt only on reload
     private String fmtString;
 
     public GeoLocatePlaceholders(GeoLocate plugin) {
-        this.plugin     = plugin;
-        this.fmtString  = buildFmt(plugin.getGeoConfig().getDecimalPlaces());
+        this.plugin    = plugin;
+        this.fmtString = buildFmt(plugin.getGeoConfig().getDecimalPlaces());
     }
 
     private static String buildFmt(int dp) {
@@ -26,7 +25,10 @@ public final class GeoLocatePlaceholders extends PlaceholderExpansion {
 
     @Override public @NotNull String getIdentifier() { return "geolocate"; }
     @Override public @NotNull String getAuthor()     { return "MaxLananas"; }
-    @Override public @NotNull String getVersion()    { return plugin.getDescription().getVersion(); }
+
+    // getPluginMeta().getVersion() is the non-deprecated API on Paper 1.21.4+.
+    @Override public @NotNull String getVersion()    { return plugin.getPluginVersion(); }
+
     @Override public boolean persist()               { return true; }
 
     @Override
@@ -38,7 +40,7 @@ public final class GeoLocatePlaceholders extends PlaceholderExpansion {
 
         GeoPoint point = optPoint.get();
         int dp = plugin.getGeoConfig().getDecimalPlaces();
-        // Refresh format string if decimal-places config changed at runtime
+
         if (fmtString.length() != dp + 3) fmtString = buildFmt(dp);
 
         return switch (params.toLowerCase()) {
