@@ -1,14 +1,12 @@
-import org.gradle.jvm.tasks.Jar
-
 plugins {
     java
     `maven-publish`
-    id("com.gradleup.shadow") version "8.3.5"
+    id("io.github.goooler.shadow") version "8.1.8"
 }
 
-group = property("group")!!
-version = property("version")!!
-description = property("description")!!
+group = providers.gradleProperty("group").get()
+version = providers.gradleProperty("version").get()
+description = providers.gradleProperty("description").get()
 
 repositories {
     mavenCentral()
@@ -39,13 +37,13 @@ tasks.processResources {
     }
 }
 
-tasks.shadowJar {
+tasks.named<com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar>("shadowJar") {
     archiveClassifier.set("")
     minimize()
 }
 
 tasks.build {
-    dependsOn(tasks.shadowJar)
+    dependsOn(tasks.named("shadowJar"))
 }
 
 publishing {
