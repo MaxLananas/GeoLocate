@@ -12,33 +12,44 @@ concurrency:
 
 jobs:
   build:
-    name: Build & Test
+    name: Build & Verify
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Set up Java 21
+      - name: Set up Java 21 (Temurin)
         uses: actions/setup-java@v4
         with:
           java-version: '21'
           distribution: 'temurin'
           cache: gradle
 
-      - name: Grant execute permission
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v4
+
+      - name: Grant execute permission for Gradlew
         run: chmod +x gradlew
 
-      - name: Build
-        run: ./gradlew build --no-daemon --parallel --build-cache
+      - name: Read project version
+        id: version
+        run: |
+          VERSION=$(grep "^version=" gradle.properties | cut -d'=' -f2)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
 
-      - name: Upload artifact
+      - name: Build with Gradle
+        run: ./gradlew build --no-daemon --parallel --build-cache --continue
+
+      - name: Upload build artifact
+        if: success() || failure()
         uses: actions/upload-artifact@v4
         with:
-          name: GeoLocate-${{ github.ref_name }}-${{ github.sha }}
+          name: GeoLocate-${{ steps.version.outputs.version }}-build${{ github.run_number }}-${{ github.sha }}
           path: build/libs/GeoLocate-*.jar
-          retention-days: 7
+          retention-days: 14
           compression-level: 9
+          if-no-files-found: warn
