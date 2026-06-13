@@ -1,70 +1,66 @@
 package dev.geolocate.api;
 
 import dev.geolocate.GeoLocate;
-import dev.geolocate.config.GeoLocateConfig;
-import dev.geolocate.mapping.CoordinateConverter;
 import dev.geolocate.mapping.GeoPoint;
+import dev.geolocate.util.GoogleMapsLink;
 import org.bukkit.Location;
 import org.bukkit.World;
+import org.bukkit.entity.Player;
 
-import java.util.HashMap;
-import java.util.Map;
 import java.util.Optional;
 
-public final class WorldMapper {
+public final class GeoLocateAPI {
 
+    private static GeoLocateAPI instance;
     private final GeoLocate plugin;
-    private final Map<String, CoordinateConverter> converters;
 
-    public WorldMapper(GeoLocate plugin) {
+    public GeoLocateAPI(GeoLocate plugin) {
         this.plugin = plugin;
-        this.converters = new HashMap<>();
-        initialize();
+        instance = this;
     }
 
-    private void initialize() {
-        converters.clear();
-        for (Map.Entry<String, GeoLocateConfig.WorldConfig> entry : plugin.getGeoConfig().getWorldConfigs().entrySet()) {
-            GeoLocateConfig.WorldConfig wc = entry.getValue();
-            CoordinateConverter converter = new CoordinateConverter(
-                    wc.getBoundingBox(),
-                    wc.getProjection(),
-                    plugin.getGeoConfig().getDecimalPlaces(),
-                    plugin.getGeoConfig().getCacheSize()
-            );
-            converters.put(entry.getKey(), converter);
+    public static GeoLocateAPI get() {
+        if (instance == null) {
+            throw new IllegalStateException("GeoLocate is not loaded. Make sure GeoLocate is a dependency in your plugin.yml.");
         }
+        return instance;
     }
 
     public Optional<GeoPoint> getGeoPoint(Location location) {
-        if (location == null || location.getWorld() == null) return Optional.empty();
-        String worldName = location.getWorld().getName();
-        CoordinateConverter converter = converters.get(worldName);
-        if (converter == null) return Optional.empty();
-        return Optional.of(converter.convert(location));
+        return plugin.getWorldMapper().getGeoPoint(location);
+    }
+
+    public Optional<GeoPoint> getGeoPoint(Player player) {
+        return getGeoPoint(player.getLocation());
     }
 
     public Optional<GeoPoint> getGeoPoint(World world, double x, double y, double z) {
-        if (world == null) return Optional.empty();
-        CoordinateConverter converter = converters.get(world.getName());
-        if (converter == null) return Optional.empty();
-        return Optional.of(converter.convert(x, y, z));
+        return plugin.getWorldMapper().getGeoPoint(world, x, y, z);
+    }
+
+    public Optional<String> getGoogleMapsLink(Location location) {
+        return getGeoPoint(location).map(point ->
+                GoogleMapsLink.build(point, plugin.getGeoConfig().getGoogleMapsZoom())
+        );
+    }
+
+    public Optional<String> getGoogleMapsLink(Player player) {
+        return getGoogleMapsLink(player.getLocation());
+    }
+
+    public Optional<String> getGoogleMapsLink(GeoPoint point) {
+        return Optional.of(GoogleMapsLink.build(point, plugin.getGeoConfig().getGoogleMapsZoom()));
     }
 
     public boolean isWorldMapped(String worldName) {
-        return converters.containsKey(worldName);
+        return plugin.getWorldMapper().isWorldMapped(worldName);
     }
 
-    public int getConfiguredWorldCount() {
-        return converters.size();
+    public boolean isWorldMapped(World world) {
+        return world != null && isWorldMapped(world.getName());
     }
 
-    public void clearCache(String worldName) {
-        CoordinateConverter converter = converters.get(worldName);
-        if (converter != null) converter.clearCache();
-    }
-
-    public void clearAllCaches() {
-        converters.values().forEach(CoordinateConverter::clearCache);
+    public void clearCache() {
+        plugin.getWorldMapper().clearAllCaches();
     }
 }
