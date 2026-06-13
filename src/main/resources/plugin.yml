@@ -4,8 +4,11 @@ main: dev.geolocate.GeoLocate
 description: ${description}
 api-version: '1.21'
 authors:
-  - YourName
-website: https://github.com/yourusername/GeoLocate
+  - MaxLananas
+website: https://github.com/MaxLananas/GeoLocate
+
+softdepend:
+  - PlaceholderAPI
 
 commands:
   geolocate:
@@ -17,12 +20,32 @@ commands:
     permission: geolocate.use
   geoadmin:
     description: Manage GeoLocate settings
-    usage: /geoadmin <reload|setbounds|info>
+    usage: /geoadmin <reload|info|clearcache>
     permission: geolocate.admin
+  geoconvert:
+    description: Convert real-world coordinates to Minecraft block position
+    usage: /geoconvert <latitude> <longitude>
+    aliases:
+      - geoconv
+    permission: geolocate.use
+  geodistance:
+    description: Get the real-world distance between two players
+    usage: /geodistance [player]
+    aliases:
+      - geodist
+    permission: geolocate.use
+  geonotify:
+    description: Toggle move notifications for yourself
+    usage: /geonotify
+    permission: geolocate.notify.toggle
+  geoactionbar:
+    description: Toggle the actionbar live display for yourself
+    usage: /geoactionbar
+    permission: geolocate.actionbar
 
 permissions:
   geolocate.use:
-    description: Allows using the /geolocate command
+    description: Allows using /geolocate, /geoconvert and /geodistance
     default: true
   geolocate.others:
     description: Allows checking other players coordinates
@@ -33,3 +56,12 @@ permissions:
   geolocate.notify:
     description: Receives automatic coordinate notifications on move
     default: false
+  geolocate.notify.toggle:
+    description: Allows toggling move notifications
+    default: true
+  geolocate.actionbar:
+    description: Allows toggling the actionbar live display
+    default: true
+  geolocate.placeholderapi:
+    description: Allows using GeoLocate PlaceholderAPI placeholders
+    default: true
