@@ -17,15 +17,21 @@ public final class GeoLocate extends JavaPlugin {
 
     private static volatile GeoLocate instance;
 
-    private GeoLocateConfig        geoConfig;
-    private WorldMapper            worldMapper;
-    private GeoLocateAPI           api;
+    private GeoLocateConfig         geoConfig;
+    private WorldMapper             worldMapper;
+    private GeoLocateAPI            api;
     private PlayerPreferenceStorage preferenceStorage;
-    private ActionBarTask          actionBarTask;
+    private ActionBarTask           actionBarTask;
+
+    // Cached at enable time — getPluginMeta() is the non-deprecated replacement
+    // for getDescription() on Paper 1.21.4+.
+    private String pluginVersion;
 
     @Override
     public void onEnable() {
-        instance = this;
+        instance      = this;
+        pluginVersion = getPluginMeta().getVersion();
+
         saveDefaultConfig();
 
         this.geoConfig         = new GeoLocateConfig(this);
@@ -38,7 +44,7 @@ public final class GeoLocate extends JavaPlugin {
         startTasks();
         registerPlaceholders();
 
-        getLogger().info("GeoLocate v" + getDescription().getVersion() + " enabled.");
+        getLogger().info("GeoLocate v" + pluginVersion + " enabled.");
         getLogger().info("Loaded " + worldMapper.getConfiguredWorldCount() + " world mapping(s).");
     }
 
@@ -95,9 +101,10 @@ public final class GeoLocate extends JavaPlugin {
         actionBarTask.runTaskTimer(this, 0L, geoConfig.getActionBarUpdateInterval());
     }
 
+    public String getPluginVersion()                        { return pluginVersion; }
     public static GeoLocate getInstance()                   { return instance; }
-    public GeoLocateConfig         getGeoConfig()           { return geoConfig; }
-    public WorldMapper             getWorldMapper()         { return worldMapper; }
-    public GeoLocateAPI            getAPI()                 { return api; }
-    public PlayerPreferenceStorage getPreferenceStorage()   { return preferenceStorage; }
+    public GeoLocateConfig          getGeoConfig()          { return geoConfig; }
+    public WorldMapper              getWorldMapper()        { return worldMapper; }
+    public GeoLocateAPI             getAPI()                { return api; }
+    public PlayerPreferenceStorage  getPreferenceStorage()  { return preferenceStorage; }
 }
