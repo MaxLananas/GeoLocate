@@ -81,7 +81,6 @@ jobs:
           RELEASE_TITLE: ${{ inputs.release_title }}
           REPO: ${{ github.repository }}
           OWNER: ${{ github.repository_owner }}
-          VERSION_BUMP: ${{ inputs.version_bump }}
         run: |
           PREVIOUS_TAG=$(git tag --sort=-version:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1)
 
@@ -92,7 +91,7 @@ jobs:
           else
             RAW_COMMITS=$(git log --pretty=format:"%H %s %an" "${PREVIOUS_TAG}..HEAD")
             RANGE_LABEL="Changes since ${PREVIOUS_TAG}"
-            COMPARE_LINE="**Full diff:** [${PREVIOUS_TAG} → ${NEXT_VERSION}](https://github.com/${REPO}/compare/${PREVIOUS_TAG}...${NEXT_VERSION})"
+            COMPARE_LINE="**Full diff:** [${PREVIOUS_TAG} -> ${NEXT_VERSION}](https://github.com/${REPO}/compare/${PREVIOUS_TAG}...${NEXT_VERSION})"
           fi
 
           COMMIT_LIST_MD=""
@@ -105,18 +104,20 @@ jobs:
             AUTHOR=$(echo "$LINE" | awk '{print $NF}')
             MESSAGE=$(echo "$LINE" | awk '{$1=""; $NF=""; print}' | xargs)
             URL="https://github.com/${REPO}/commit/${HASH}"
-            COMMIT_LIST_MD+="- [\`${SHORT}\`](${URL}) **${MESSAGE}** — ${AUTHOR}"$'\n'
-            COMMIT_LIST_PLAIN+="- [${SHORT}] ${MESSAGE} (by ${AUTHOR})"$'\n'
+            COMMIT_LIST_MD="${COMMIT_LIST_MD}- [\`${SHORT}\`](${URL}) **${MESSAGE}** — ${AUTHOR}"$'\n'
+            COMMIT_LIST_PLAIN="${COMMIT_LIST_PLAIN}- [${SHORT}] ${MESSAGE} (by ${AUTHOR})"$'\n'
           done <<< "$RAW_COMMITS"
-
-          PROMPT="You are a senior software engineer writing professional release notes for a Java Paper Minecraft plugin library called GeoLocate. GeoLocate maps Minecraft block coordinates to real-world latitude and longitude with Google Maps links. Write a concise, technical, and professional release description in English for version ${NEXT_VERSION}. Here are the commits included in this release: ${COMMIT_LIST_PLAIN} Write 2 to 4 short paragraphs. Be precise and technical. Do not use emojis. Do not repeat the commit list. Focus on what changed functionally and why it matters to developers using the library. Output only the description text, no title, no markdown headers."
 
           PAYLOAD=$(jq -n \
             --arg model "llama3-70b-8192" \
-            --arg prompt "$PROMPT" \
+            --arg commits "$COMMIT_LIST_PLAIN" \
+            --arg version "$NEXT_VERSION" \
             '{
               model: $model,
-              messages: [{role: "user", content: $prompt}],
+              messages: [{
+                role: "user",
+                content: ("You are a senior software engineer writing professional release notes for a Java Paper Minecraft plugin library called GeoLocate. GeoLocate maps Minecraft block coordinates to real-world latitude and longitude with Google Maps links. Write a concise, technical, and professional release description in English for version " + $version + ". Here are the commits: " + $commits + " Write 2 to 4 short paragraphs. Be precise and technical. Do not use emojis. Do not repeat the commit list. Focus on what changed functionally and why it matters to developers using the library. Output only the description text, no title, no markdown headers.")
+              }],
               temperature: 0.4,
               max_tokens: 512
             }')
@@ -140,24 +141,33 @@ jobs:
           BODY_FILE=$(mktemp)
 
           {
-            printf '%s\n\n' "$AI_TEXT"
-            printf '---\n\n'
-            printf '### %s\n\n' "$RANGE_LABEL"
-            printf '%s\n' "$COMMIT_LIST_MD"
-            printf '---\n\n'
-            printf '%s\n\n' "$COMPARE_LINE"
-            printf '---\n\n'
-            printf '### Using GeoLocate in your project\n\n'
-            printf '```kotlin\n'
-            printf 'repositories {\n'
-            printf '    maven("https://jitpack.io")\n'
-            printf '}\n\n'
-            printf 'dependencies {\n'
-            printf '    compileOnly("com.github.%s:GeoLocate:%s")\n' "$OWNER" "$NEXT_VERSION"
-            printf '}\n'
-            printf '```\n\n'
-            printf '- [JitPack](%s)\n' "$JITPACK_URL"
-            printf '- [Documentation / Wiki](%s)\n' "$WIKI_URL"
+            echo "$AI_TEXT"
+            echo ""
+            echo "---"
+            echo ""
+            echo "### ${RANGE_LABEL}"
+            echo ""
+            echo "$COMMIT_LIST_MD"
+            echo "---"
+            echo ""
+            echo "$COMPARE_LINE"
+            echo ""
+            echo "---"
+            echo ""
+            echo "### Using GeoLocate in your project"
+            echo ""
+            echo '```kotlin'
+            echo 'repositories {'
+            echo '    maven("https://jitpack.io")'
+            echo '}'
+            echo ''
+            echo 'dependencies {'
+            echo "    compileOnly(\"com.github.${OWNER}:GeoLocate:${NEXT_VERSION}\")"
+            echo '}'
+            echo '```'
+            echo ""
+            echo "- [JitPack](${JITPACK_URL})"
+            echo "- [Documentation / Wiki](${WIKI_URL})"
           } > "$BODY_FILE"
 
           echo "body_file=$BODY_FILE" >> $GITHUB_OUTPUT
