@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version_bump:
-        description: 'Version bump type'
+        description: 'Version bump type (semver)'
         required: true
         default: 'patch'
         type: choice
@@ -13,9 +13,19 @@ on:
           - minor
           - major
       release_title:
-        description: 'Release title (optional, defaults to version)'
+        description: 'Release title (optional, defaults to version tag)'
         required: false
         default: ''
+      prerelease:
+        description: 'Mark as pre-release'
+        required: false
+        default: false
+        type: boolean
+      dry_run:
+        description: 'Dry run (skip git push and GitHub release creation)'
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: release
@@ -25,55 +35,85 @@ jobs:
   release:
     name: Create Release
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     permissions:
       contents: write
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Set up Java 21
+      - name: Set up Java 21 (Temurin)
         uses: actions/setup-java@v4
         with:
           java-version: '21'
           distribution: 'temurin'
           cache: gradle
 
-      - name: Grant execute permission
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v4
+
+      - name: Grant execute permission for Gradlew
         run: chmod +x gradlew
 
-      - name: Get current version
+      - name: Read current version from gradle.properties
         id: current_version
         run: |
           VERSION=$(grep "^version=" gradle.properties | cut -d'=' -f2)
+          if [ -z "$VERSION" ]; then
+            echo "ERROR: Could not read version from gradle.properties"
+            exit 1
+          fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Current version: $VERSION"
 
-      - name: Compute next version
+      - name: Compute next semantic version
         id: next_version
         run: |
           CURRENT="${{ steps.current_version.outputs.version }}"
           MAJOR=$(echo "$CURRENT" | cut -d. -f1)
           MINOR=$(echo "$CURRENT" | cut -d. -f2)
           PATCH=$(echo "$CURRENT" | cut -d. -f3)
+
+          if ! [[ "$MAJOR" =~ ^[0-9]+$ && "$MINOR" =~ ^[0-9]+$ && "$PATCH" =~ ^[0-9]+$ ]]; then
+            echo "ERROR: Invalid version format: $CURRENT"
+            exit 1
+          fi
+
           case "${{ inputs.version_bump }}" in
             major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
             minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
             patch) PATCH=$((PATCH + 1)) ;;
           esac
-          echo "version=$MAJOR.$MINOR.$PATCH" >> $GITHUB_OUTPUT
+
+          NEXT="$MAJOR.$MINOR.$PATCH"
+          echo "version=$NEXT" >> $GITHUB_OUTPUT
+          echo "tag=v$NEXT" >> $GITHUB_OUTPUT
+          echo "Next version: $NEXT"
 
       - name: Update version in gradle.properties
         run: |
-          sed -i "s/^version=.*/version=${{ steps.next_version.outputs.version }}/" gradle.properties
+          NEXT="${{ steps.next_version.outputs.version }}"
+          sed -i "s/^version=.*/version=$NEXT/" gradle.properties
+          grep "^version=" gradle.properties
 
-      - name: Build
+      - name: Build release artifact
         run: ./gradlew build --no-daemon --parallel --build-cache
 
-      - name: Generate release notes
+      - name: Verify JAR artifact exists
+        run: |
+          JAR_COUNT=$(ls build/libs/GeoLocate-*.jar 2>/dev/null | wc -l)
+          if [ "$JAR_COUNT" -eq 0 ]; then
+            echo "ERROR: No JAR artifact found in build/libs/"
+            exit 1
+          fi
+          echo "Found $JAR_COUNT JAR file(s):"
+          ls -lh build/libs/GeoLocate-*.jar
+
+      - name: Generate AI-powered release notes
         id: notes
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
@@ -84,36 +124,56 @@ jobs:
         run: |
           set -euo pipefail
 
-          PREVIOUS_TAG=$(git tag --sort=-version:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1 || true)
+          # ── Determine commit range ────────────────────────────────────────
+          PREVIOUS_TAG=$(git tag --sort=-version:refname \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+            | head -n 1 || true)
 
           if [ -z "$PREVIOUS_TAG" ]; then
             RAW_COMMITS=$(git log --pretty=format:"%H %s %an" HEAD)
-            RANGE_LABEL="Initial release — full history"
-            COMPARE_LINE="**Full diff:** [View all commits](https://github.com/${REPO}/commits/${NEXT_VERSION})"
+            RANGE_LABEL="Initial release — full commit history"
+            COMPARE_LINE="**Repository:** [View all commits](https://github.com/${REPO}/commits/main)"
           else
             RAW_COMMITS=$(git log --pretty=format:"%H %s %an" "${PREVIOUS_TAG}..HEAD")
             RANGE_LABEL="Changes since ${PREVIOUS_TAG}"
-            COMPARE_LINE="**Full diff:** [\`${PREVIOUS_TAG}\` -> \`${NEXT_VERSION}\`](https://github.com/${REPO}/compare/${PREVIOUS_TAG}...${NEXT_VERSION})"
+            COMPARE_LINE="**Full diff:** [\`${PREVIOUS_TAG}\` → \`${NEXT_VERSION}\`](https://github.com/${REPO}/compare/${PREVIOUS_TAG}...${NEXT_VERSION})"
           fi
 
+          if [ -z "$RAW_COMMITS" ]; then
+            echo "WARNING: No commits found since last tag."
+            RAW_COMMITS="chore: no changes"
+          fi
+
+          # ── Parse and categorise commits ──────────────────────────────────
           COMMIT_LIST_MD=""
           FEAT_LIST=""
           FIX_LIST=""
           PERF_LIST=""
           REFACTOR_LIST=""
+          BREAK_LIST=""
           OTHER_LIST=""
 
           while IFS= read -r LINE; do
             [ -z "$LINE" ] && continue
+
             HASH=$(echo "$LINE" | awk '{print $1}')
             SHORT="${HASH:0:7}"
+            # Author is the last field
             AUTHOR=$(echo "$LINE" | awk '{print $NF}')
-            MESSAGE=$(echo "$LINE" | awk '{$1=""; $NF=""; print}' | xargs)
+            # Message is everything between hash and author
+            MESSAGE=$(echo "$LINE" | awk '{$1=""; $NF=""; print $0}' | xargs)
             URL="https://github.com/${REPO}/commit/${HASH}"
 
-            TYPE=$(echo "$MESSAGE" | grep -oP '^(feat|fix|perf|refactor|chore|docs|style|test)' || true)
+            # Detect breaking changes (! after type or BREAKING CHANGE footer)
+            IS_BREAK=$(echo "$MESSAGE" | grep -cP '^[a-z]+(\([^)]+\))?!:' || true)
+            TYPE=$(echo "$MESSAGE" | grep -oP '^[a-z]+(?=(\([^)]+\))?!?:)' || true)
 
-            COMMIT_LIST_MD="${COMMIT_LIST_MD}- [\`${SHORT}\`](${URL}) ${MESSAGE} — **${AUTHOR}**"$'\n'
+            ENTRY="- [\`${SHORT}\`](${URL}) ${MESSAGE} — **${AUTHOR}**"
+            COMMIT_LIST_MD="${COMMIT_LIST_MD}${ENTRY}"$'\n'
+
+            if [ "$IS_BREAK" -gt 0 ]; then
+              BREAK_LIST="${BREAK_LIST}${MESSAGE}"$'\n'
+            fi
 
             case "$TYPE" in
               feat)     FEAT_LIST="${FEAT_LIST}${MESSAGE}"$'\n' ;;
@@ -124,129 +184,126 @@ jobs:
             esac
           done <<< "$RAW_COMMITS"
 
-          PROMPT="You are a principal software engineer and technical writer. You are writing the official release notes for GeoLocate ${NEXT_VERSION}, a production-grade Java library for Paper Minecraft servers (1.21.10+, Java 21). GeoLocate converts Minecraft block coordinates (X/Z) to real-world WGS84 latitude/longitude using configurable Mercator or Linear projections, and generates Google Maps, OpenStreetMap and Apple Maps deep links.
+          # ── Build prompt for Groq ─────────────────────────────────────────
+          PROMPT="You are a principal software engineer and technical writer. You are writing the official release notes for GeoLocate ${NEXT_VERSION}, a production-grade Paper Minecraft server plugin (1.21.10+, Java 21) that converts Minecraft block coordinates (X/Z) to real-world WGS84 latitude/longitude using configurable Mercator or Linear map projections. The plugin exposes a public Java API, Bukkit events, PlaceholderAPI integration, and a coordinate caching layer backed by StampedLock and ConcurrentHashMap.
 
-          Your output will be published verbatim on the GitHub Releases page. It must be read by experienced Java developers who integrate this library into their plugins.
+          Your output will be published verbatim on the GitHub Releases page and read by experienced Java developers integrating this library into their own plugins.
 
-          Constraints:
-          - Write exactly 3 paragraphs, no headers, no bullet points, no markdown formatting
-          - Each paragraph must be 3 to 5 sentences
-          - Be extremely technical and precise
-          - Reference specific class names, method signatures, interface contracts, or algorithmic changes where relevant
-          - Mention concrete improvements: thread safety, cache behavior, API surface, event contracts, data formats
-          - Do not repeat the commit list
-          - Do not use emojis
-          - Do not use generic filler phrases
-          - Write as if you deeply understand every line of the codebase
+          Hard constraints:
+          - Write exactly 3 paragraphs, no headers, no bullet points, no markdown formatting of any kind
+          - Each paragraph must contain exactly 4 sentences
+          - Be extremely technical and precise — mention specific class names, method signatures, concurrency primitives, algorithmic changes, or interface contracts where directly relevant
+          - Mention concrete, observable improvements: thread safety guarantees, cache eviction behavior, API surface changes, event lifecycle, data format compatibility
+          - Do not repeat or paraphrase the commit list
+          - Do not use emojis, exclamation marks used for excitement, or filler phrases such as 'exciting', 'happy to announce', 'we are pleased'
+          - Do not start any sentence with 'This release'
+          - Write in the third person, past tense
+          - Write as if you reviewed every changed line of code
 
           New features:
-          ${FEAT_LIST}
+          ${FEAT_LIST:-none}
 
           Bug fixes:
-          ${FIX_LIST}
+          ${FIX_LIST:-none}
 
           Performance improvements:
-          ${PERF_LIST}
- 
+          ${PERF_LIST:-none}
+
           Refactoring:
-          ${REFACTOR_LIST}
+          ${REFACTOR_LIST:-none}
+
+          Breaking changes:
+          ${BREAK_LIST:-none}
 
           Other changes:
-          ${OTHER_LIST}"
+          ${OTHER_LIST:-none}"
 
+          # ── Call Groq API ─────────────────────────────────────────────────
           PAYLOAD=$(jq -n \
-            --arg model "llama-3.1-8b-instant" \
+            --arg model "llama-3.3-70b-versatile" \
             --arg content "$PROMPT" \
             '{
               model: $model,
               messages: [{ role: "user", content: $content }],
-              temperature: 0.2,
-              max_tokens: 600
+              temperature: 0.15,
+              max_tokens: 700,
+              top_p: 0.9
             }')
 
-          RESPONSE=$(curl -s \
-            -X POST "https://api.groq.com/openai/v1/chat/completions" \
-            -H "Authorization: Bearer ${GROQ_API_KEY}" \
-            -H "Content-Type: application/json" \
-            -d "$PAYLOAD")
+          HTTP_STATUS=0
+          RESPONSE=""
+          for ATTEMPT in 1 2 3; do
+            RESPONSE=$(curl -s -w "\n%{http_code}" \
+              -X POST "https://api.groq.com/openai/v1/chat/completions" \
+              -H "Authorization: Bearer ${GROQ_API_KEY}" \
+              -H "Content-Type: application/json" \
+              --max-time 30 \
+              -d "$PAYLOAD")
+            HTTP_STATUS=$(echo "$RESPONSE" | tail -n1)
+            RESPONSE=$(echo "$RESPONSE" | head -n -1)
+            echo "Groq attempt $ATTEMPT — HTTP $HTTP_STATUS"
+            [ "$HTTP_STATUS" -eq 200 ] && break
+            sleep $((ATTEMPT * 3))
+          done
 
-          echo "Groq raw response: $RESPONSE"
-
-          AI_TEXT=$(echo "$RESPONSE" | jq -r 'if .choices then .choices[0].message.content else .error.message end // ""')
-
-          if [ -z "$AI_TEXT" ] || [ "$AI_TEXT" = "null" ]; then
-            AI_TEXT="Internal improvements and stability fixes. See commit list below for details."
+          if [ "$HTTP_STATUS" -ne 200 ]; then
+            echo "WARNING: Groq API returned HTTP $HTTP_STATUS after 3 attempts. Using fallback text."
+            AI_TEXT="Internal improvements, performance optimisations, and stability fixes were applied across multiple subsystems. Refer to the categorised changelog and commit list below for a complete account of changes introduced in this release."
+          else
+            AI_TEXT=$(echo "$RESPONSE" | jq -r \
+              'if .choices then .choices[0].message.content else empty end // ""')
+            if [ -z "$AI_TEXT" ] || [ "$AI_TEXT" = "null" ]; then
+              AI_TEXT="Internal improvements and stability fixes. See commit list below for details."
+            fi
           fi
 
-          JITPACK_URL="https://jitpack.io/#${REPO}/${NEXT_VERSION}"
-          WIKI_URL="https://github.com/${REPO}/wiki"
-
+          # ── Resolve display name ──────────────────────────────────────────
           if [ -n "$RELEASE_TITLE" ]; then
             DISPLAY_NAME="$RELEASE_TITLE"
           else
             DISPLAY_NAME="GeoLocate ${NEXT_VERSION}"
           fi
 
+          JITPACK_URL="https://jitpack.io/#${REPO}/${NEXT_VERSION}"
+          WIKI_URL="https://github.com/${REPO}/wiki"
+
+          # ── Write release body to temp file ──────────────────────────────
           BODY_FILE=$(mktemp)
+
+          write_section() {
+            local TITLE="$1"
+            local CONTENT="$2"
+            if [ -n "$CONTENT" ]; then
+              printf '#### %s\n' "$TITLE"
+              while IFS= read -r ITEM; do
+                [ -z "$ITEM" ] && continue
+                printf -- '- %s\n' "$ITEM"
+              done <<< "$CONTENT"
+              printf '\n'
+            fi
+          }
 
           {
             printf '%s\n' "$AI_TEXT"
             printf '\n---\n\n'
             printf '### %s\n\n' "$RANGE_LABEL"
 
-            if [ -n "$FEAT_LIST" ]; then
-              printf '#### New Features\n'
-              while IFS= read -r ITEM; do
-                [ -z "$ITEM" ] && continue
-                printf -- '- %s\n' "$ITEM"
-              done <<< "$FEAT_LIST"
-              printf '\n'
-            fi
-
-            if [ -n "$FIX_LIST" ]; then
-              printf '#### Bug Fixes\n'
-              while IFS= read -r ITEM; do
-                [ -z "$ITEM" ] && continue
-                printf -- '- %s\n' "$ITEM"
-              done <<< "$FIX_LIST"
-              printf '\n'
-            fi
-
-            if [ -n "$PERF_LIST" ]; then
-              printf '#### Performance\n'
-              while IFS= read -r ITEM; do
-                [ -z "$ITEM" ] && continue
-                printf -- '- %s\n' "$ITEM"
-              done <<< "$PERF_LIST"
-              printf '\n'
-            fi
-
-            if [ -n "$REFACTOR_LIST" ]; then
-              printf '#### Refactoring\n'
-              while IFS= read -r ITEM; do
-                [ -z "$ITEM" ] && continue
-                printf -- '- %s\n' "$ITEM"
-              done <<< "$REFACTOR_LIST"
-              printf '\n'
-            fi
-
-            if [ -n "$OTHER_LIST" ]; then
-              printf '#### Other\n'
-              while IFS= read -r ITEM; do
-                [ -z "$ITEM" ] && continue
-                printf -- '- %s\n' "$ITEM"
-              done <<< "$OTHER_LIST"
-              printf '\n'
-            fi
+            write_section "Breaking Changes" "$BREAK_LIST"
+            write_section "New Features"     "$FEAT_LIST"
+            write_section "Bug Fixes"        "$FIX_LIST"
+            write_section "Performance"      "$PERF_LIST"
+            write_section "Refactoring"      "$REFACTOR_LIST"
+            write_section "Other"            "$OTHER_LIST"
 
             printf '#### All Commits\n\n'
             printf '%s\n' "$COMMIT_LIST_MD"
             printf '\n---\n\n'
-            printf '%s\n' "$COMPARE_LINE"
-            printf '\n---\n\n'
+            printf '%s\n\n' "$COMPARE_LINE"
+            printf '---\n\n'
+
             printf '### Installation\n\n'
+            printf '**Gradle (Kotlin DSL)**\n\n'
             printf '```kotlin\n'
-            printf '// build.gradle.kts\n'
             printf 'repositories {\n'
             printf '    maven("https://jitpack.io")\n'
             printf '}\n\n'
@@ -254,43 +311,72 @@ jobs:
             printf '    compileOnly("com.github.%s:GeoLocate:%s")\n' "$OWNER" "$NEXT_VERSION"
             printf '}\n'
             printf '```\n\n'
+
+            printf '**Gradle (Groovy DSL)**\n\n'
+            printf '```groovy\n'
+            printf 'repositories {\n'
+            printf "    maven { url 'https://jitpack.io' }\n"
+            printf '}\n\n'
+            printf 'dependencies {\n'
+            printf "    compileOnly 'com.github.%s:GeoLocate:%s'\n" "$OWNER" "$NEXT_VERSION"
+            printf '}\n'
+            printf '```\n\n'
+
+            printf '**plugin.yml**\n\n'
             printf '```yaml\n'
-            printf '# plugin.yml\n'
             printf 'depend:\n'
             printf '  - GeoLocate\n'
             printf '```\n\n'
+
             printf '| Resource | Link |\n'
             printf '|---|---|\n'
             printf '| JitPack | [com.github.%s:GeoLocate:%s](%s) |\n' "$OWNER" "$NEXT_VERSION" "$JITPACK_URL"
             printf '| Wiki | [Documentation](%s) |\n' "$WIKI_URL"
             printf '| API | [GeoLocateAPI.java](https://github.com/%s/blob/main/src/main/java/dev/geolocate/api/GeoLocateAPI.java) |\n' "$REPO"
+            printf '| Commands | [Commands](https://github.com/%s/wiki/Commands) |\n' "$REPO"
+            printf '| Configuration | [Configuration](https://github.com/%s/wiki/Configuration) |\n' "$REPO"
           } > "$BODY_FILE"
 
-          echo "body_file=$BODY_FILE" >> $GITHUB_OUTPUT
+          echo "body_file=$BODY_FILE"    >> $GITHUB_OUTPUT
           echo "display_name=$DISPLAY_NAME" >> $GITHUB_OUTPUT
-          echo "tag=${NEXT_VERSION}" >> $GITHUB_OUTPUT
 
       - name: Commit version bump
+        if: ${{ inputs.dry_run == false }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add gradle.properties
-          git commit -m "chore(release): bump version to ${{ steps.next_version.outputs.version }}"
+          git commit -m "chore(release): bump version to ${{ steps.next_version.outputs.version }} [skip ci]"
           git push origin HEAD
 
-      - name: Create and push tag
+      - name: Create and push version tag
+        if: ${{ inputs.dry_run == false }}
         run: |
-          git tag "${{ steps.notes.outputs.tag }}"
-          git push origin "${{ steps.notes.outputs.tag }}"
+          TAG="${{ steps.next_version.outputs.tag }}"
+          git tag "$TAG"
+          git push origin "$TAG"
+          echo "Tag $TAG pushed."
 
       - name: Create GitHub Release
+        if: ${{ inputs.dry_run == false }}
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.notes.outputs.tag }}
+          tag_name: ${{ steps.next_version.outputs.tag }}
           name: ${{ steps.notes.outputs.display_name }}
           body_path: ${{ steps.notes.outputs.body_file }}
           files: build/libs/GeoLocate-*.jar
           draft: false
-          prerelease: false
+          prerelease: ${{ inputs.prerelease }}
+          generate_release_notes: false
+          fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Dry run summary
+        if: ${{ inputs.dry_run == true }}
+        run: |
+          echo "=== DRY RUN — no changes were pushed ==="
+          echo "Would have released: ${{ steps.next_version.outputs.tag }}"
+          echo "Display name: ${{ steps.notes.outputs.display_name }}"
+          echo "Release body preview:"
+          cat "${{ steps.notes.outputs.body_file }}"
