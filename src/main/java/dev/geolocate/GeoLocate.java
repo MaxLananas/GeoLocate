@@ -7,8 +7,8 @@ import dev.geolocate.config.GeoLocateConfig;
 import dev.geolocate.listener.PlayerMoveListener;
 import dev.geolocate.listener.PlayerQuitListener;
 import dev.geolocate.placeholder.GeoLocatePlaceholders;
-import dev.geolocate.task.ActionBarTask;
 import dev.geolocate.storage.PlayerPreferenceStorage;
+import dev.geolocate.task.ActionBarTask;
 import org.bukkit.plugin.java.JavaPlugin;
 
 public final class GeoLocate extends JavaPlugin {
@@ -41,12 +41,9 @@ public final class GeoLocate extends JavaPlugin {
 
     @Override
     public void onDisable() {
-        if (actionBarTask != null) {
-            actionBarTask.cancel();
-        }
-        if (preferenceStorage != null) {
-            preferenceStorage.saveAll();
-        }
+        if (actionBarTask != null) actionBarTask.cancel();
+        if (preferenceStorage != null) preferenceStorage.saveAll();
+        if (api != null) api.getRegionManager().clear();
         getLogger().info("GeoLocate disabled.");
         instance = null;
     }
@@ -86,30 +83,14 @@ public final class GeoLocate extends JavaPlugin {
         reloadConfig();
         this.geoConfig = new GeoLocateConfig(this);
         this.worldMapper = new WorldMapper(this);
-        if (actionBarTask != null) {
-            actionBarTask.cancel();
-        }
+        if (actionBarTask != null) actionBarTask.cancel();
         this.actionBarTask = new ActionBarTask(this);
         actionBarTask.runTaskTimer(this, 0L, geoConfig.getActionBarUpdateInterval());
     }
 
-    public static GeoLocate getInstance() {
-        return instance;
-    }
-
-    public GeoLocateConfig getGeoConfig() {
-        return geoConfig;
-    }
-
-    public WorldMapper getWorldMapper() {
-        return worldMapper;
-    }
-
-    public GeoLocateAPI getAPI() {
-        return api;
-    }
-
-    public PlayerPreferenceStorage getPreferenceStorage() {
-        return preferenceStorage;
-    }
+    public static GeoLocate getInstance() { return instance; }
+    public GeoLocateConfig getGeoConfig() { return geoConfig; }
+    public WorldMapper getWorldMapper() { return worldMapper; }
+    public GeoLocateAPI getAPI() { return api; }
+    public PlayerPreferenceStorage getPreferenceStorage() { return preferenceStorage; }
 }
