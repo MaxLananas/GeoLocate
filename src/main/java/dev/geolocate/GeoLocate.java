@@ -1,229 +1,103 @@
-package dev.geolocate.api;
+package dev.geolocate;
 
-import dev.geolocate.GeoLocate;
-import dev.geolocate.border.GeoBorderDetector;
-import dev.geolocate.export.GeoExporter;
-import dev.geolocate.heatmap.GeoHeatmap;
-import dev.geolocate.history.PlayerGeoHistory;
-import dev.geolocate.mapping.GeoPoint;
-import dev.geolocate.model.DistanceMatrix;
-import dev.geolocate.model.GeoPath;
-import dev.geolocate.model.GeoRegion;
-import dev.geolocate.model.GeoSnapshot;
-import dev.geolocate.util.GoogleMapsLink;
-import org.bukkit.Location;
-import org.bukkit.World;
-import org.bukkit.entity.Player;
+import dev.geolocate.api.GeoLocateAPI;
+import dev.geolocate.api.WorldMapper;
+import dev.geolocate.command.GeoLocateCommand;
+import dev.geolocate.config.GeoLocateConfig;
+import dev.geolocate.listener.PlayerMoveListener;
+import dev.geolocate.listener.PlayerQuitListener;
+import dev.geolocate.placeholder.GeoLocatePlaceholders;
+import dev.geolocate.storage.PlayerPreferenceStorage;
+import dev.geolocate.task.ActionBarTask;
+import org.bukkit.plugin.java.JavaPlugin;
 
-import java.util.Collection;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
-import java.util.Optional;
-import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ConcurrentHashMap;
 
-public final class GeoLocateAPI {
+public final class GeoLocate extends JavaPlugin {
 
-    private static volatile GeoLocateAPI instance;
+    private static volatile GeoLocate instance;
 
-    private final GeoLocate plugin;
-    private final RegionManager regionManager;
-    private final ConcurrentHashMap<UUID, PlayerGeoHistory> histories;
-    private final GeoHeatmap globalHeatmap;
+    private GeoLocateConfig        geoConfig;
+    private WorldMapper            worldMapper;
+    private GeoLocateAPI           api;
+    private PlayerPreferenceStorage preferenceStorage;
+    private ActionBarTask          actionBarTask;
 
-    public GeoLocateAPI(GeoLocate plugin) {
-        this.plugin = plugin;
-        this.regionManager = new RegionManager(plugin);
-        this.histories = new ConcurrentHashMap<>();
-        this.globalHeatmap = new GeoHeatmap(0.01);
+    @Override
+    public void onEnable() {
         instance = this;
+        saveDefaultConfig();
+
+        this.geoConfig         = new GeoLocateConfig(this);
+        this.worldMapper       = new WorldMapper(this);
+        this.preferenceStorage = new PlayerPreferenceStorage(this);
+        this.api               = new GeoLocateAPI(this);
+
+        registerCommands();
+        registerListeners();
+        startTasks();
+        registerPlaceholders();
+
+        getLogger().info("GeoLocate v" + getDescription().getVersion() + " enabled.");
+        getLogger().info("Loaded " + worldMapper.getConfiguredWorldCount() + " world mapping(s).");
     }
 
-    public static GeoLocateAPI get() {
-        GeoLocateAPI api = instance;
-        if (api == null) {
-            throw new IllegalStateException("GeoLocate is not loaded.");
+    @Override
+    public void onDisable() {
+        if (actionBarTask     != null) actionBarTask.cancel();
+        if (preferenceStorage != null) preferenceStorage.saveAll();
+        if (api               != null) api.getRegionManager().clear();
+        getLogger().info("GeoLocate disabled.");
+        instance = null;
+    }
+
+    private void registerCommands() {
+        GeoLocateCommand handler = new GeoLocateCommand(this);
+
+        List<String> names = List.of(
+                "geolocate", "geoadmin", "geoconvert", "geodistance",
+                "geonotify", "geoactionbar", "geopath", "georegion",
+                "geomatrix", "geoexport", "geostats"
+        );
+        for (String name : names) {
+            var cmd = getCommand(name);
+            if (cmd != null) {
+                cmd.setExecutor(handler);
+                cmd.setTabCompleter(handler);
+            }
         }
-        return api;
     }
 
-    public Optional<GeoPoint> getGeoPoint(Location location) {
-        return plugin.getWorldMapper().getGeoPoint(location);
+    private void registerListeners() {
+        getServer().getPluginManager().registerEvents(new PlayerMoveListener(this), this);
+        getServer().getPluginManager().registerEvents(new PlayerQuitListener(this), this);
     }
 
-    public Optional<GeoPoint> getGeoPoint(Player player) {
-        return getGeoPoint(player.getLocation());
+    private void startTasks() {
+        this.actionBarTask = new ActionBarTask(this);
+        actionBarTask.runTaskTimer(this, 0L, geoConfig.getActionBarUpdateInterval());
     }
 
-    public Optional<GeoPoint> getGeoPoint(World world, double x, double y, double z) {
-        return plugin.getWorldMapper().getGeoPoint(world, x, y, z);
-    }
-
-    public CompletableFuture<Optional<GeoPoint>> getGeoPointAsync(Player player) {
-        // Capture location on the calling (main) thread before switching
-        Location loc = player.getLocation();
-        return CompletableFuture.supplyAsync(() -> getGeoPoint(loc));
-    }
-
-    public CompletableFuture<Optional<GeoPoint>> getGeoPointAsync(Location location) {
-        return CompletableFuture.supplyAsync(() -> getGeoPoint(location));
-    }
-
-    public Optional<String> getGoogleMapsLink(Location location) {
-        return getGeoPoint(location)
-                .map(p -> GoogleMapsLink.build(p, plugin.getGeoConfig().getGoogleMapsZoom()));
-    }
-
-    public Optional<String> getGoogleMapsLink(Player player) {
-        return getGoogleMapsLink(player.getLocation());
-    }
-
-    public Optional<String> getGoogleMapsLink(GeoPoint point) {
-        return Optional.of(GoogleMapsLink.build(point, plugin.getGeoConfig().getGoogleMapsZoom()));
-    }
-
-    public Optional<String> getOpenStreetMapLink(Player player) {
-        return getGeoPoint(player)
-                .map(p -> GoogleMapsLink.buildOpenStreetMap(p, plugin.getGeoConfig().getGoogleMapsZoom()));
-    }
-
-    public Optional<String> getAppleMapsLink(Player player) {
-        return getGeoPoint(player)
-                .map(p -> GoogleMapsLink.buildAppleMaps(p, plugin.getGeoConfig().getGoogleMapsZoom()));
-    }
-
-    public boolean isWorldMapped(String worldName) {
-        return plugin.getWorldMapper().isWorldMapped(worldName);
-    }
-
-    public boolean isWorldMapped(World world) {
-        return world != null && isWorldMapped(world.getName());
-    }
-
-    public void clearCache() {
-        plugin.getWorldMapper().clearAllCaches();
-    }
-
-    public RegionManager getRegionManager() {
-        return regionManager;
-    }
-
-    public void registerRegion(GeoRegion region) {
-        regionManager.registerRegion(region);
-    }
-
-    public List<GeoRegion> getRegionsAt(Player player) {
-        return getGeoPoint(player)
-                .map(regionManager::getRegionsContaining)
-                .orElse(List.of());
-    }
-
-    public List<GeoRegion> getRegionsAt(GeoPoint point) {
-        return regionManager.getRegionsContaining(point);
-    }
-
-    public PlayerGeoHistory getHistory(UUID uuid) {
-        return histories.computeIfAbsent(uuid, id -> new PlayerGeoHistory(id, 500));
-    }
-
-    public PlayerGeoHistory getHistory(Player player) {
-        return getHistory(player.getUniqueId());
-    }
-
-    public void recordSnapshot(Player player) {
-        Location loc = player.getLocation();
-        String worldName = player.getWorld().getName();
-        UUID uuid = player.getUniqueId();
-        String name = player.getName();
-
-        getGeoPoint(loc).ifPresent(point -> {
-            GeoSnapshot snapshot = new GeoSnapshot(
-                    uuid,
-                    name,
-                    point,
-                    worldName,
-                    loc.getX(),
-                    loc.getY(),
-                    loc.getZ()
-            );
-            getHistory(uuid).record(snapshot);
-            globalHeatmap.record(point);
-        });
-    }
-
-    public GeoPath getPlayerPath(Player player) {
-        return getHistory(player).toPath();
-    }
-
-    public GeoPath getPlayerPath(UUID uuid) {
-        return getHistory(uuid).toPath();
-    }
-
-    public GeoHeatmap getGlobalHeatmap() {
-        return globalHeatmap;
-    }
-
-    public GeoHeatmap createHeatmap(double cellSizeDegrees) {
-        return new GeoHeatmap(cellSizeDegrees);
-    }
-
-    public DistanceMatrix buildDistanceMatrix(Collection<? extends Player> players) {
-        Map<String, GeoPoint> points = new HashMap<>(players.size());
-        for (Player p : players) {
-            getGeoPoint(p).ifPresent(gp -> points.put(p.getName(), gp));
+    private void registerPlaceholders() {
+        if (getServer().getPluginManager().isPluginEnabled("PlaceholderAPI")) {
+            new GeoLocatePlaceholders(this).register();
+            getLogger().info("PlaceholderAPI integration enabled.");
         }
-        return new DistanceMatrix(points);
     }
 
-    public Optional<Double> getRealWorldDistance(Player a, Player b) {
-        Optional<GeoPoint> pa = getGeoPoint(a);
-        Optional<GeoPoint> pb = getGeoPoint(b);
-        if (pa.isEmpty() || pb.isEmpty()) return Optional.empty();
-        return Optional.of(pa.get().distanceTo(pb.get()));
+    public void reload() {
+        reloadConfig();
+        this.geoConfig = new GeoLocateConfig(this);
+        worldMapper.reinitialize();
+
+        if (actionBarTask != null) actionBarTask.cancel();
+        this.actionBarTask = new ActionBarTask(this);
+        actionBarTask.runTaskTimer(this, 0L, geoConfig.getActionBarUpdateInterval());
     }
 
-    public Optional<GeoBorderDetector> getBorderDetector(String worldName) {
-        return Optional.ofNullable(plugin.getGeoConfig().getWorldConfig(worldName))
-                .map(GeoBorderDetector::new);
-    }
-
-    public Optional<GeoBorderDetector> getBorderDetector(Player player) {
-        return getBorderDetector(player.getWorld().getName());
-    }
-
-    /**
-     * @deprecated Use {@link #exportHistoryCSV(Player)} or other typed export methods directly.
-     */
-    @Deprecated
-    public GeoExporter getExporter() {
-        return null;
-    }
-
-    public String exportHistoryCSV(Player player) {
-        return getHistory(player).toCSV();
-    }
-
-    public String exportHistoryGeoJSON(Player player) {
-        return getHistory(player).toGeoJSON();
-    }
-
-    public String exportPathGPX(Player player) {
-        return GeoExporter.pathToGPX(getPlayerPath(player));
-    }
-
-    public String exportPathKML(Player player) {
-        return GeoExporter.pathToKML(getPlayerPath(player));
-    }
-
-    public void clearHistory(UUID uuid) {
-        PlayerGeoHistory history = histories.get(uuid);
-        if (history != null) history.clear();
-    }
-
-    public void removePlayer(UUID uuid) {
-        histories.remove(uuid);
-        regionManager.removePlayer(uuid);
-    }
+    public static GeoLocate getInstance()                   { return instance; }
+    public GeoLocateConfig         getGeoConfig()           { return geoConfig; }
+    public WorldMapper             getWorldMapper()         { return worldMapper; }
+    public GeoLocateAPI            getAPI()                 { return api; }
+    public PlayerPreferenceStorage getPreferenceStorage()   { return preferenceStorage; }
 }
