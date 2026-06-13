@@ -87,7 +87,9 @@ public final class CoordinateConverter {
             for (double z = minZ; z <= maxZ; z += sampleStep) {
                 if (cache.size() >= cacheSize) return;
                 long key = buildCacheKey(x, z);
-                cache.computeIfAbsent(key, k -> round(projection.toGeoPoint(x, z, box)));
+                final double fx = x;
+                final double fz = z;
+                cache.computeIfAbsent(key, k -> round(projection.toGeoPoint(fx, fz, box)));
             }
         }
     }
