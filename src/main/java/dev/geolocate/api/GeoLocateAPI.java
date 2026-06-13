@@ -8,6 +8,7 @@ import org.bukkit.World;
 import org.bukkit.entity.Player;
 
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 
 public final class GeoLocateAPI {
 
@@ -21,7 +22,7 @@ public final class GeoLocateAPI {
 
     public static GeoLocateAPI get() {
         if (instance == null) {
-            throw new IllegalStateException("GeoLocate is not loaded. Make sure GeoLocate is a dependency in your plugin.yml.");
+            throw new IllegalStateException("GeoLocate is not loaded.");
         }
         return instance;
     }
@@ -36,6 +37,15 @@ public final class GeoLocateAPI {
 
     public Optional<GeoPoint> getGeoPoint(World world, double x, double y, double z) {
         return plugin.getWorldMapper().getGeoPoint(world, x, y, z);
+    }
+
+    public CompletableFuture<Optional<GeoPoint>> getGeoPointAsync(Player player) {
+        Location loc = player.getLocation();
+        return CompletableFuture.supplyAsync(() -> getGeoPoint(loc));
+    }
+
+    public CompletableFuture<Optional<GeoPoint>> getGeoPointAsync(Location location) {
+        return CompletableFuture.supplyAsync(() -> getGeoPoint(location));
     }
 
     public Optional<String> getGoogleMapsLink(Location location) {
