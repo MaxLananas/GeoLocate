@@ -14,25 +14,21 @@ commands:
   geolocate:
     description: Get your real-world coordinates from your Minecraft position
     usage: /geolocate [player]
-    aliases:
-      - geo
-      - coords
+    aliases: [geo, coords]
     permission: geolocate.use
   geoadmin:
     description: Manage GeoLocate settings
-    usage: /geoadmin <reload|info|clearcache>
+    usage: /geoadmin <reload|info|clearcache|stats>
     permission: geolocate.admin
   geoconvert:
     description: Convert real-world coordinates to Minecraft block position
     usage: /geoconvert <latitude> <longitude>
-    aliases:
-      - geoconv
+    aliases: [geoconv]
     permission: geolocate.use
   geodistance:
     description: Get the real-world distance between two players
-    usage: /geodistance [player]
-    aliases:
-      - geodist
+    usage: /geodistance <player>
+    aliases: [geodist]
     permission: geolocate.use
   geonotify:
     description: Toggle move notifications for yourself
@@ -42,26 +38,51 @@ commands:
     description: Toggle the actionbar live display for yourself
     usage: /geoactionbar
     permission: geolocate.actionbar
+  geopath:
+    description: View and manage your geo movement history
+    usage: /geopath <info|clear|snap>
+    aliases: [gpath]
+    permission: geolocate.use
+  georegion:
+    description: View geo-region information
+    usage: /georegion <current|list|info <name>>
+    aliases: [gregion]
+    permission: geolocate.use
+  geomatrix:
+    description: Show real-world distance matrix between online players
+    usage: /geomatrix [player]
+    aliases: [gmatrix]
+    permission: geolocate.use
+  geoexport:
+    description: Export your geo history to a file
+    usage: /geoexport <csv|geojson|gpx|kml>
+    aliases: [gexport]
+    permission: geolocate.use
+  geostats:
+    description: Show GeoLocate runtime statistics
+    usage: /geostats
+    aliases: [gstats]
+    permission: geolocate.admin
 
 permissions:
   geolocate.use:
-    description: Allows using /geolocate, /geoconvert and /geodistance
+    description: Use /geolocate, /geoconvert, /geodistance, /geopath, /georegion, /geomatrix, /geoexport
     default: true
   geolocate.others:
-    description: Allows checking other players coordinates
+    description: Check other players coordinates
     default: op
   geolocate.admin:
-    description: Allows using admin commands
+    description: Use admin commands
     default: op
   geolocate.notify:
-    description: Receives automatic coordinate notifications on move
+    description: Receive automatic coordinate notifications on move
     default: false
   geolocate.notify.toggle:
-    description: Allows toggling move notifications
+    description: Toggle move notifications
     default: true
   geolocate.actionbar:
-    description: Allows toggling the actionbar live display
+    description: Toggle the actionbar live display
     default: true
   geolocate.placeholderapi:
-    description: Allows using GeoLocate PlaceholderAPI placeholders
+    description: Use GeoLocate PlaceholderAPI placeholders
     default: true
