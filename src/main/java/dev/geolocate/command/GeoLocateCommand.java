@@ -8,7 +8,6 @@ import dev.geolocate.mapping.GeoPoint;
 import dev.geolocate.model.DistanceMatrix;
 import dev.geolocate.model.GeoPath;
 import dev.geolocate.model.GeoRegion;
-import dev.geolocate.model.GeoSnapshot;
 import dev.geolocate.util.GoogleMapsLink;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.event.HoverEvent;
@@ -23,38 +22,45 @@ import org.bukkit.entity.Player;
 import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 public final class GeoLocateCommand implements CommandExecutor, TabCompleter {
 
+    private static final List<String> ADMIN_SUBS   = List.of("reload", "info", "clearcache", "stats");
+    private static final List<String> PATH_SUBS    = List.of("info", "clear", "snap");
+    private static final List<String> REGION_SUBS  = List.of("current", "list", "info");
+    private static final List<String> EXPORT_SUBS  = List.of("csv", "geojson", "gpx", "kml");
+
     private final GeoLocate plugin;
     private final MiniMessage mm;
-    private final Map<UUID, Long> cooldowns;
+    // UUID -> last command use timestamp (ms); ConcurrentHashMap for async safety
+    private final ConcurrentHashMap<UUID, Long> cooldowns;
 
     public GeoLocateCommand(GeoLocate plugin) {
         this.plugin = plugin;
         this.mm = MiniMessage.miniMessage();
-        this.cooldowns = new HashMap<>();
+        this.cooldowns = new ConcurrentHashMap<>();
     }
 
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
         return switch (command.getName().toLowerCase()) {
-            case "geoadmin" -> handleAdmin(sender, args);
-            case "geoconvert" -> handleConvert(sender, args);
+            case "geoadmin"    -> handleAdmin(sender, args);
+            case "geoconvert"  -> handleConvert(sender, args);
             case "geodistance" -> handleDistance(sender, args);
-            case "geonotify" -> handleNotify(sender);
-            case "geoactionbar" -> handleActionBar(sender);
-            case "geopath" -> handlePath(sender, args);
-            case "georegion" -> handleRegion(sender, args);
-            case "geomatrix" -> handleMatrix(sender, args);
-            case "geoexport" -> handleExport(sender, args);
-            case "geostats" -> handleStats(sender);
-            default -> handleGeoLocate(sender, args);
+            case "geonotify"   -> handleNotify(sender);
+            case "geoactionbar"-> handleActionBar(sender);
+            case "geopath"     -> handlePath(sender, args);
+            case "georegion"   -> handleRegion(sender, args);
+            case "geomatrix"   -> handleMatrix(sender, args);
+            case "geoexport"   -> handleExport(sender, args);
+            case "geostats"    -> handleStats(sender);
+            default            -> handleGeoLocate(sender, args);
         };
     }
 
@@ -63,14 +69,17 @@ public final class GeoLocateCommand implements CommandExecutor, TabCompleter {
         if (sender.hasPermission("geolocate.admin")) return false;
         int seconds = plugin.getGeoConfig().getCommandCooldownSeconds();
         if (seconds <= 0) return false;
+
         long now = System.currentTimeMillis();
         UUID uuid = player.getUniqueId();
         Long last = cooldowns.get(uuid);
-        if (last != null && now - last < seconds * 1000L) {
-            long remaining = (seconds * 1000L - (now - last)) / 1000L + 1;
+        long cooldownMs = seconds * 1000L;
+
+        if (last != null && now - last < cooldownMs) {
+            long remaining = (cooldownMs - (now - last)) / 1000L + 1;
             String msg = plugin.getGeoConfig().getPrefix()
                     + plugin.getGeoConfig().getMessage("cooldown")
-                    .replace("<seconds>", String.valueOf(remaining));
+                        .replace("<seconds>", String.valueOf(remaining));
             sender.sendMessage(mm.deserialize(msg));
             return true;
         }
@@ -91,22 +100,30 @@ public final class GeoLocateCommand implements CommandExecutor, TabCompleter {
         }
 
         if (isOnCooldown(sender)) return true;
-        if (!plugin.getWorldMapper().isWorldMapped(target.getWorld().getName())) { sendMessage(sender, "world-not-configured"); return true; }
+        if (!plugin.getWorldMapper().isWorldMapped(target.getWorld().getName())) {
+            sendMessage(sender, "world-not-configured"); return true;
+        }
 
         Optional<GeoPoint> optPoint = plugin.getAPI().getGeoPoint(target);
         if (optPoint.isEmpty()) { sendMessage(sender, "world-not-configured"); return true; }
 
         GeoPoint point = optPoint.get();
-        String mapsLink = GoogleMapsLink.build(point, plugin.getGeoConfig().getGoogleMapsZoom());
         int dp = plugin.getGeoConfig().getDecimalPlaces();
+        int zoom = plugin.getGeoConfig().getGoogleMapsZoom();
+        String mapsLink = GoogleMapsLink.build(point, zoom);
+        String osmLink  = GoogleMapsLink.buildOpenStreetMap(point, zoom);
+        String prefix   = plugin.getGeoConfig().getPrefix();
+        boolean self    = sender.equals(target);
 
-        String prefix = plugin.getGeoConfig().getPrefix();
-        boolean self = sender.equals(target);
+        String header = self
+                ? prefix + "<white>Your real-world location:"
+                : prefix + "<white>" + target.getName() + "'s real-world location:";
 
-        sender.sendMessage(mm.deserialize(prefix + (self ? "<white>Your real-world location:" : "<white>" + target.getName() + "'s real-world location:")));
+        sender.sendMessage(mm.deserialize(header));
         sender.sendMessage(mm.deserialize("  <gray>Latitude:  <aqua>" + formatCoord(point.latitude(), dp)));
         sender.sendMessage(mm.deserialize("  <gray>Longitude: <aqua>" + formatCoord(point.longitude(), dp)));
         sender.sendMessage(mm.deserialize("  <gray>DMS:       <aqua>" + point.formatDMS()));
+
         if (plugin.getGeoConfig().isShowAltitude()) {
             sender.sendMessage(mm.deserialize("  <gray>Altitude:  <aqua>" + point.altitude() + "m"));
         }
@@ -120,7 +137,7 @@ public final class GeoLocateCommand implements CommandExecutor, TabCompleter {
         Component linkComponent = mm.deserialize(
                 prefix + "<white>Open in: "
                         + "<click:open_url:'" + mapsLink + "'><underlined><green>Google Maps</green></underlined></click>"
-                        + "  <click:open_url:'" + GoogleMapsLink.buildOpenStreetMap(point, plugin.getGeoConfig().getGoogleMapsZoom()) + "'><underlined><aqua>OpenStreetMap</aqua></underlined></click>"
+                        + "  <click:open_url:'" + osmLink + "'><underlined><aqua>OpenStreetMap</aqua></underlined></click>"
         ).hoverEvent(HoverEvent.showText(mm.deserialize("<gray>" + point.format(dp))));
 
         sender.sendMessage(linkComponent);
@@ -135,9 +152,9 @@ public final class GeoLocateCommand implements CommandExecutor, TabCompleter {
 
         if (args.length == 0) {
             sender.sendMessage(mm.deserialize(prefix + "<gold>Path commands:"));
-            sender.sendMessage(mm.deserialize("  <gray>/geopath info <white>- Show your path statistics"));
+            sender.sendMessage(mm.deserialize("  <gray>/geopath info  <white>- Show your path statistics"));
             sender.sendMessage(mm.deserialize("  <gray>/geopath clear <white>- Clear your history"));
-            sender.sendMessage(mm.deserialize("  <gray>/geopath snap <white>- Record a snapshot now"));
+            sender.sendMessage(mm.deserialize("  <gray>/geopath snap  <white>- Record a snapshot now"));
             return true;
         }
 
@@ -150,12 +167,14 @@ public final class GeoLocateCommand implements CommandExecutor, TabCompleter {
                 sender.sendMessage(mm.deserialize(prefix + "<gold>Your geo path"));
                 sender.sendMessage(mm.deserialize("  <gray>Snapshots:   <white>" + history.size()));
                 sender.sendMessage(mm.deserialize("  <gray>Total dist:  <white>" + formatDistance(history.getTotalDistanceTraveled())));
+
                 if (!path.isEmpty()) {
                     GeoPoint first = path.getFirst();
-                    GeoPoint last = path.getLast();
+                    GeoPoint last  = path.getLast();
                     sender.sendMessage(mm.deserialize("  <gray>Start:       <aqua>" + first.format(dp)));
                     sender.sendMessage(mm.deserialize("  <gray>Current:     <aqua>" + last.format(dp)));
-                    sender.sendMessage(mm.deserialize("  <gray>Bearing:     <white>" + String.format("%.1f", first.bearingTo(last)) + "° " + first.bearingCardinal(last)));
+                    sender.sendMessage(mm.deserialize("  <gray>Bearing:     <white>"
+                            + String.format("%.1f", first.bearingTo(last)) + "° " + first.bearingCardinal(last)));
                 }
             }
             case "clear" -> {
@@ -179,9 +198,9 @@ public final class GeoLocateCommand implements CommandExecutor, TabCompleter {
 
         if (args.length == 0) {
             sender.sendMessage(mm.deserialize(prefix + "<gold>Region commands:"));
-            sender.sendMessage(mm.deserialize("  <gray>/georegion current <white>- Show regions you are in"));
-            sender.sendMessage(mm.deserialize("  <gray>/georegion list <white>- List all registered regions"));
-            sender.sendMessage(mm.deserialize("  <gray>/georegion info <name> <white>- Show region details"));
+            sender.sendMessage(mm.deserialize("  <gray>/georegion current       <white>- Show regions you are in"));
+            sender.sendMessage(mm.deserialize("  <gray>/georegion list          <white>- List all registered regions"));
+            sender.sendMessage(mm.deserialize("  <gray>/georegion info <name>   <white>- Show region details"));
             return true;
         }
 
@@ -193,7 +212,9 @@ public final class GeoLocateCommand implements CommandExecutor, TabCompleter {
                 } else {
                     sender.sendMessage(mm.deserialize(prefix + "<white>You are inside " + regions.size() + " region(s):"));
                     for (GeoRegion r : regions) {
-                        sender.sendMessage(mm.deserialize("  <gold>" + r.getName() + " <gray>(" + r.getVertices().size() + " vertices, " + String.format("%.2f", r.getAreaSquareKm()) + " km²)"));
+                        sender.sendMessage(mm.deserialize("  <gold>" + r.getName()
+                                + " <gray>(" + r.getVertices().size() + " vertices, "
+                                + String.format("%.2f", r.getAreaSquareKm()) + " km²)"));
                     }
                 }
             }
@@ -204,22 +225,27 @@ public final class GeoLocateCommand implements CommandExecutor, TabCompleter {
                 } else {
                     sender.sendMessage(mm.deserialize(prefix + "<gold>Registered regions (" + all.size() + "):"));
                     for (GeoRegion r : all) {
-                        sender.sendMessage(mm.deserialize("  <white>" + r.getName() + " <dark_gray>[" + r.getId().substring(0, 8) + "] <gray>" + String.format("%.2f", r.getAreaSquareKm()) + " km²"));
+                        sender.sendMessage(mm.deserialize("  <white>" + r.getName()
+                                + " <dark_gray>[" + r.getId().substring(0, 8) + "]"
+                                + " <gray>" + String.format("%.2f", r.getAreaSquareKm()) + " km²"));
                     }
                 }
             }
             case "info" -> {
-                if (args.length < 2) { sender.sendMessage(mm.deserialize(prefix + "<red>Usage: /georegion info <name>")); return true; }
-                String name = String.join(" ", java.util.Arrays.copyOfRange(args, 1, args.length));
+                if (args.length < 2) {
+                    sender.sendMessage(mm.deserialize(prefix + "<red>Usage: /georegion info <name>"));
+                    return true;
+                }
+                String name = String.join(" ", Arrays.copyOfRange(args, 1, args.length));
                 plugin.getAPI().getRegionManager().getRegionByName(name).ifPresentOrElse(r -> {
-                    GeoPoint center = r.getCentroid();
+                    GeoPoint centroid = r.getCentroid();
                     int dp = plugin.getGeoConfig().getDecimalPlaces();
                     sender.sendMessage(mm.deserialize(prefix + "<gold>" + r.getName()));
                     sender.sendMessage(mm.deserialize("  <gray>ID:       <dark_gray>" + r.getId()));
                     sender.sendMessage(mm.deserialize("  <gray>Vertices: <white>" + r.getVertices().size()));
                     sender.sendMessage(mm.deserialize("  <gray>Area:     <white>" + String.format("%.4f", r.getAreaSquareKm()) + " km²"));
-                    sender.sendMessage(mm.deserialize("  <gray>Centroid: <aqua>" + center.format(dp)));
-                    sender.sendMessage(mm.deserialize("  <gray>DMS:      <aqua>" + center.formatDMS()));
+                    sender.sendMessage(mm.deserialize("  <gray>Centroid: <aqua>" + centroid.format(dp)));
+                    sender.sendMessage(mm.deserialize("  <gray>DMS:      <aqua>" + centroid.formatDMS()));
                 }, () -> sender.sendMessage(mm.deserialize(prefix + "<red>Region not found: " + name)));
             }
             default -> sender.sendMessage(mm.deserialize(prefix + "<red>Unknown subcommand."));
@@ -252,14 +278,16 @@ public final class GeoLocateCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage(mm.deserialize(prefix + "<white>Distances from <aqua>" + target + "<white>:"));
             distances.entrySet().stream()
                     .sorted(Map.Entry.comparingByValue())
-                    .forEach(e -> sender.sendMessage(mm.deserialize("  <gray>" + e.getKey() + ": <white>" + formatDistance(e.getValue()))));
+                    .forEach(e -> sender.sendMessage(
+                            mm.deserialize("  <gray>" + e.getKey() + ": <white>" + formatDistance(e.getValue()))));
         } else {
-            List<String> labels = matrix.getLabels();
-            for (String label : labels) {
+            for (String label : matrix.getLabels()) {
                 String closest = matrix.getClosestTo(label);
                 if (closest != null) {
                     double dist = matrix.getDistance(label, closest);
-                    sender.sendMessage(mm.deserialize("  <aqua>" + label + " <gray>-> <white>" + closest + " <dark_gray>(" + formatDistance(dist) + ")"));
+                    sender.sendMessage(mm.deserialize(
+                            "  <aqua>" + label + " <gray>-> <white>" + closest
+                                    + " <dark_gray>(" + formatDistance(dist) + ")"));
                 }
             }
         }
@@ -279,14 +307,12 @@ public final class GeoLocateCommand implements CommandExecutor, TabCompleter {
         }
 
         String format = args[0].toLowerCase();
-        String content;
-
-        content = switch (format) {
-            case "csv" -> plugin.getAPI().exportHistoryCSV(player);
+        String content = switch (format) {
+            case "csv"     -> plugin.getAPI().exportHistoryCSV(player);
             case "geojson" -> plugin.getAPI().exportHistoryGeoJSON(player);
-            case "gpx" -> plugin.getAPI().exportPathGPX(player);
-            case "kml" -> plugin.getAPI().exportPathKML(player);
-            default -> null;
+            case "gpx"     -> plugin.getAPI().exportPathGPX(player);
+            case "kml"     -> plugin.getAPI().exportPathKML(player);
+            default        -> null;
         };
 
         if (content == null) {
@@ -302,7 +328,6 @@ public final class GeoLocateCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage(mm.deserialize(prefix + "<red>Export failed: " + e.getMessage()));
             plugin.getLogger().severe("Export failed for " + player.getName() + ": " + e.getMessage());
         }
-
         return true;
     }
 
@@ -311,14 +336,15 @@ public final class GeoLocateCommand implements CommandExecutor, TabCompleter {
 
         String prefix = plugin.getGeoConfig().getPrefix();
         sender.sendMessage(mm.deserialize(prefix + "<gold>GeoLocate Statistics"));
-        sender.sendMessage(mm.deserialize("  <gray>Mapped worlds:    <white>" + plugin.getWorldMapper().getConfiguredWorldCount()));
+        sender.sendMessage(mm.deserialize("  <gray>Mapped worlds:      <white>" + plugin.getWorldMapper().getConfiguredWorldCount()));
         sender.sendMessage(mm.deserialize("  <gray>Registered regions: <white>" + plugin.getAPI().getRegionManager().getRegionCount()));
-        sender.sendMessage(mm.deserialize("  <gray>Heatmap cells:    <white>" + plugin.getAPI().getGlobalHeatmap().getUniqueCellCount()));
-        sender.sendMessage(mm.deserialize("  <gray>Total recordings: <white>" + plugin.getAPI().getGlobalHeatmap().getTotalRecordings()));
+        sender.sendMessage(mm.deserialize("  <gray>Heatmap cells:      <white>" + plugin.getAPI().getGlobalHeatmap().getUniqueCellCount()));
+        sender.sendMessage(mm.deserialize("  <gray>Total recordings:   <white>" + plugin.getAPI().getGlobalHeatmap().getTotalRecordings()));
 
         GeoPoint hotspot = plugin.getAPI().getGlobalHeatmap().getMostVisited();
         if (hotspot != null) {
-            sender.sendMessage(mm.deserialize("  <gray>Top hotspot:      <aqua>" + hotspot.format(plugin.getGeoConfig().getDecimalPlaces())));
+            sender.sendMessage(mm.deserialize("  <gray>Top hotspot:        <aqua>"
+                    + hotspot.format(plugin.getGeoConfig().getDecimalPlaces())));
         }
         return true;
     }
@@ -327,7 +353,8 @@ public final class GeoLocateCommand implements CommandExecutor, TabCompleter {
         if (!sender.hasPermission("geolocate.use")) { sendMessage(sender, "no-permission"); return true; }
         if (!(sender instanceof Player player)) { sendMessage(sender, "player-only"); return true; }
         if (args.length < 2) {
-            sender.sendMessage(mm.deserialize(plugin.getGeoConfig().getPrefix() + "<yellow>Usage: /geoconvert <latitude> <longitude>"));
+            sender.sendMessage(mm.deserialize(plugin.getGeoConfig().getPrefix()
+                    + "<yellow>Usage: /geoconvert <latitude> <longitude>"));
             return true;
         }
 
@@ -340,11 +367,16 @@ public final class GeoLocateCommand implements CommandExecutor, TabCompleter {
             return true;
         }
 
-        if (lat < -90 || lat > 90 || lon < -180 || lon > 180) { sendMessage(sender, "invalid-coordinates"); return true; }
-        if (!plugin.getWorldMapper().isWorldMapped(player.getWorld().getName())) { sendMessage(sender, "world-not-configured"); return true; }
+        if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+            sendMessage(sender, "invalid-coordinates"); return true;
+        }
+        if (!plugin.getWorldMapper().isWorldMapped(player.getWorld().getName())) {
+            sendMessage(sender, "world-not-configured"); return true;
+        }
         if (isOnCooldown(sender)) return true;
 
-        double[] mc = plugin.getWorldMapper().getConverter(player.getWorld().getName())
+        double[] mc = plugin.getWorldMapper()
+                .getConverter(player.getWorld().getName())
                 .map(c -> c.convertToMinecraft(lat, lon))
                 .orElse(null);
 
@@ -361,45 +393,46 @@ public final class GeoLocateCommand implements CommandExecutor, TabCompleter {
         return true;
     }
 
+
     private boolean handleDistance(CommandSender sender, String[] args) {
         if (!(sender instanceof Player self)) { sendMessage(sender, "player-only"); return true; }
         if (!sender.hasPermission("geolocate.use")) { sendMessage(sender, "no-permission"); return true; }
         if (args.length < 1) {
-            sender.sendMessage(mm.deserialize(plugin.getGeoConfig().getPrefix() + "<yellow>Usage: /geodistance <player>"));
+            sender.sendMessage(mm.deserialize(plugin.getGeoConfig().getPrefix()
+                    + "<yellow>Usage: /geodistance <player>"));
             return true;
         }
 
         Player target = Bukkit.getPlayerExact(args[0]);
         if (target == null) { sendMessage(sender, "player-not-found"); return true; }
-        if (!plugin.getWorldMapper().isWorldMapped(self.getWorld().getName())
-                || !plugin.getWorldMapper().isWorldMapped(target.getWorld().getName())) {
-            sendMessage(sender, "distance-same-world"); return true;
-        }
-        if (!self.getWorld().getName().equals(target.getWorld().getName())) {
+
+        String selfWorld   = self.getWorld().getName();
+        String targetWorld = target.getWorld().getName();
+
+        if (!plugin.getWorldMapper().isWorldMapped(selfWorld)
+                || !plugin.getWorldMapper().isWorldMapped(targetWorld)
+                || !selfWorld.equals(targetWorld)) {
             sendMessage(sender, "distance-same-world"); return true;
         }
         if (isOnCooldown(sender)) return true;
 
-        Optional<GeoPoint> selfPoint = plugin.getAPI().getGeoPoint(self);
+        Optional<GeoPoint> selfPoint   = plugin.getAPI().getGeoPoint(self);
         Optional<GeoPoint> targetPoint = plugin.getAPI().getGeoPoint(target);
-
-        if (selfPoint.isEmpty() || targetPoint.isEmpty()) { sendMessage(sender, "world-not-configured"); return true; }
+        if (selfPoint.isEmpty() || targetPoint.isEmpty()) {
+            sendMessage(sender, "world-not-configured"); return true;
+        }
 
         GeoPoint a = selfPoint.get();
         GeoPoint b = targetPoint.get();
-        double distMeters = a.distanceTo(b);
-        double rhumbMeters = a.rhumbDistanceTo(b);
-        double bearing = a.bearingTo(b);
-        String cardinal = a.bearingCardinal(b);
-        GeoPoint mid = a.midpointTo(b);
         int dp = plugin.getGeoConfig().getDecimalPlaces();
 
         String prefix = plugin.getGeoConfig().getPrefix();
         sender.sendMessage(mm.deserialize(prefix + "<white>Distance to <aqua>" + target.getName() + "<white>:"));
-        sender.sendMessage(mm.deserialize("  <gray>Great-circle: <white>" + formatDistance(distMeters)));
-        sender.sendMessage(mm.deserialize("  <gray>Rhumb line:   <white>" + formatDistance(rhumbMeters)));
-        sender.sendMessage(mm.deserialize("  <gray>Bearing:      <white>" + String.format("%.1f", bearing) + "° " + cardinal));
-        sender.sendMessage(mm.deserialize("  <gray>Midpoint:     <aqua>" + mid.format(dp)));
+        sender.sendMessage(mm.deserialize("  <gray>Great-circle: <white>" + formatDistance(a.distanceTo(b))));
+        sender.sendMessage(mm.deserialize("  <gray>Rhumb line:   <white>" + formatDistance(a.rhumbDistanceTo(b))));
+        sender.sendMessage(mm.deserialize("  <gray>Bearing:      <white>"
+                + String.format("%.1f", a.bearingTo(b)) + "° " + a.bearingCardinal(b)));
+        sender.sendMessage(mm.deserialize("  <gray>Midpoint:     <aqua>" + a.midpointTo(b).format(dp)));
         return true;
     }
 
@@ -415,7 +448,8 @@ public final class GeoLocateCommand implements CommandExecutor, TabCompleter {
         if (!(sender instanceof Player player)) { sendMessage(sender, "player-only"); return true; }
         if (!sender.hasPermission("geolocate.actionbar")) { sendMessage(sender, "no-permission"); return true; }
         if (!plugin.getGeoConfig().isActionBarEnabled()) {
-            sender.sendMessage(mm.deserialize(plugin.getGeoConfig().getPrefix() + "<yellow>ActionBar display is disabled in config."));
+            sender.sendMessage(mm.deserialize(plugin.getGeoConfig().getPrefix()
+                    + "<yellow>ActionBar display is disabled in config."));
             return true;
         }
         boolean now = plugin.getPreferenceStorage().toggleActionBar(player.getUniqueId());
@@ -429,14 +463,14 @@ public final class GeoLocateCommand implements CommandExecutor, TabCompleter {
         if (args.length == 0) { sendAdminHelp(sender); return true; }
 
         switch (args[0].toLowerCase()) {
-            case "reload" -> { plugin.reload(); sendMessage(sender, "reload-success"); }
-            case "info" -> sendInfo(sender);
+            case "reload"     -> { plugin.reload(); sendMessage(sender, "reload-success"); }
+            case "info"       -> sendInfo(sender);
             case "clearcache" -> {
                 plugin.getWorldMapper().clearAllCaches();
                 sender.sendMessage(mm.deserialize(plugin.getGeoConfig().getPrefix() + "<green>All caches cleared."));
             }
-            case "stats" -> handleStats(sender);
-            default -> sendAdminHelp(sender);
+            case "stats"      -> handleStats(sender);
+            default           -> sendAdminHelp(sender);
         }
         return true;
     }
@@ -462,16 +496,18 @@ public final class GeoLocateCommand implements CommandExecutor, TabCompleter {
     }
 
     private void sendMessage(CommandSender sender, String key) {
-        sender.sendMessage(mm.deserialize(plugin.getGeoConfig().getPrefix() + plugin.getGeoConfig().getMessage(key)));
+        sender.sendMessage(mm.deserialize(
+                plugin.getGeoConfig().getPrefix() + plugin.getGeoConfig().getMessage(key)));
     }
 
-    private String formatCoord(double value, int dp) {
+    private static String formatCoord(double value, int dp) {
         return String.format("%." + dp + "f", value);
     }
 
-    private String formatDistance(double meters) {
-        if (meters >= 1000) return String.format("%.2f km", meters / 1000);
-        return String.format("%.0f m", meters);
+    private static String formatDistance(double meters) {
+        return meters >= 1000
+                ? String.format("%.2f km", meters / 1000.0)
+                : String.format("%.0f m", meters);
     }
 
     public void removeCooldown(UUID uuid) {
@@ -483,11 +519,7 @@ public final class GeoLocateCommand implements CommandExecutor, TabCompleter {
         List<String> suggestions = new ArrayList<>();
         switch (command.getName().toLowerCase()) {
             case "geoadmin" -> {
-                if (args.length == 1) {
-                    List.of("reload", "info", "clearcache", "stats").stream()
-                            .filter(s -> s.startsWith(args[0].toLowerCase()))
-                            .forEach(suggestions::add);
-                }
+                if (args.length == 1) filterInto(ADMIN_SUBS, args[0], suggestions);
             }
             case "geodistance", "geolocate", "geomatrix" -> {
                 if (args.length == 1 && sender.hasPermission("geolocate.others")) {
@@ -499,30 +531,19 @@ public final class GeoLocateCommand implements CommandExecutor, TabCompleter {
             }
             case "geoconvert" -> {
                 if (args.length == 1) suggestions.add("<latitude>");
-                if (args.length == 2) suggestions.add("<longitude>");
+                else if (args.length == 2) suggestions.add("<longitude>");
             }
-            case "geopath" -> {
-                if (args.length == 1) {
-                    List.of("info", "clear", "snap").stream()
-                            .filter(s -> s.startsWith(args[0].toLowerCase()))
-                            .forEach(suggestions::add);
-                }
-            }
-            case "georegion" -> {
-                if (args.length == 1) {
-                    List.of("current", "list", "info").stream()
-                            .filter(s -> s.startsWith(args[0].toLowerCase()))
-                            .forEach(suggestions::add);
-                }
-            }
-            case "geoexport" -> {
-                if (args.length == 1) {
-                    List.of("csv", "geojson", "gpx", "kml").stream()
-                            .filter(s -> s.startsWith(args[0].toLowerCase()))
-                            .forEach(suggestions::add);
-                }
-            }
+            case "geopath"   -> { if (args.length == 1) filterInto(PATH_SUBS,   args[0], suggestions); }
+            case "georegion" -> { if (args.length == 1) filterInto(REGION_SUBS, args[0], suggestions); }
+            case "geoexport" -> { if (args.length == 1) filterInto(EXPORT_SUBS, args[0], suggestions); }
         }
         return suggestions;
+    }
+
+    private static void filterInto(List<String> source, String prefix, List<String> target) {
+        String lower = prefix.toLowerCase();
+        for (String s : source) {
+            if (s.startsWith(lower)) target.add(s);
+        }
     }
 }
