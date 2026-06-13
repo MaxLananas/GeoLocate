@@ -25,6 +25,12 @@ java {
 tasks.withType<JavaCompile> {
     options.encoding = "UTF-8"
     options.release.set(21)
+    options.compilerArgs.addAll(listOf("-Xlint:none", "-nowarn"))
+}
+
+tasks.named<Javadoc>("javadoc") {
+    isFailOnError = false
+    (options as StandardJavadocDocletOptions).addStringOption("Xdoclint:none", "-quiet")
 }
 
 tasks.processResources {
@@ -54,12 +60,4 @@ publishing {
             version = project.version.toString()
         }
     }
-}
-
-repositories {
-    maven("https://jitpack.io")
-}
-
-dependencies {
-    compileOnly("com.github.MaxLananas:GeoLocate:v1.0.1")
 }
