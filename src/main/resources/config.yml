@@ -29,6 +29,9 @@ settings:
   notify-distance: 100
   cache-size: 500
   decimal-places: 6
+  command-cooldown-seconds: 3
+  actionbar-enabled: false
+  actionbar-update-interval-ticks: 20
 
 messages:
   prefix: "<dark_gray>[<gradient:#00C9FF:#92FE9D>GeoLocate</gradient>]</dark_gray> "
@@ -37,3 +40,10 @@ messages:
   player-not-found: "<red>Player not found."
   world-not-configured: "<yellow>This world has no geo-mapping configured."
   reload-success: "<green>Configuration reloaded successfully."
+  cooldown: "<yellow>Please wait <white><seconds>s</white> before using this command again."
+  notifications-enabled: "<green>Move notifications enabled."
+  notifications-disabled: "<red>Move notifications disabled."
+  invalid-coordinates: "<red>Invalid coordinates. Latitude must be between -90 and 90, longitude between -180 and 180."
+  convert-result: "<white>Minecraft coords for <aqua><lat>, <lon></aqua> → <white>X: <aqua><x></aqua> Z: <aqua><z></aqua>"
+  distance-result: "<white>Real-world distance to <aqua><player></aqua>: <white><distance>"
+  distance-same-world: "<red>Both players must be in the same mapped world."
