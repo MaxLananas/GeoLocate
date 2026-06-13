@@ -1,0 +1,35 @@
+name: GeoLocate
+version: ${version}
+main: dev.geolocate.GeoLocate
+description: ${description}
+api-version: '1.21'
+authors:
+  - YourName
+website: https://github.com/yourusername/GeoLocate
+
+commands:
+  geolocate:
+    description: Get your real-world coordinates from your Minecraft position
+    usage: /geolocate [player]
+    aliases:
+      - geo
+      - coords
+    permission: geolocate.use
+  geoadmin:
+    description: Manage GeoLocate settings
+    usage: /geoadmin <reload|setbounds|info>
+    permission: geolocate.admin
+
+permissions:
+  geolocate.use:
+    description: Allows using the /geolocate command
+    default: true
+  geolocate.others:
+    description: Allows checking other players coordinates
+    default: op
+  geolocate.admin:
+    description: Allows using admin commands
+    default: op
+  geolocate.notify:
+    description: Receives automatic coordinate notifications on move
+    default: false
