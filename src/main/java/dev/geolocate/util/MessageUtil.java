@@ -9,7 +9,8 @@ import org.bukkit.command.CommandSender;
 
 public final class MessageUtil {
 
-    private static final MiniMessage MINI_MESSAGE = MiniMessage.miniMessage();
+    private static final MiniMessage MM = MiniMessage.miniMessage();
+
     private final GeoLocate plugin;
 
     public MessageUtil(GeoLocate plugin) {
@@ -19,20 +20,19 @@ public final class MessageUtil {
     public void send(CommandSender sender, String messageKey, TagResolver... resolvers) {
         String raw = plugin.getGeoConfig().getPrefix()
                 + plugin.getGeoConfig().getMessage(messageKey);
-        Component component = MINI_MESSAGE.deserialize(raw, resolvers);
-        sender.sendMessage(component);
+        sender.sendMessage(MM.deserialize(raw, resolvers));
     }
 
     public void sendRaw(CommandSender sender, String miniMessageString) {
-        sender.sendMessage(MINI_MESSAGE.deserialize(miniMessageString));
+        sender.sendMessage(MM.deserialize(miniMessageString));
     }
 
     public static Component parse(String miniMessage) {
-        return MiniMessage.miniMessage().deserialize(miniMessage);
+        return MM.deserialize(miniMessage);
     }
 
     public static Component parse(String miniMessage, TagResolver... resolvers) {
-        return MiniMessage.miniMessage().deserialize(miniMessage, resolvers);
+        return MM.deserialize(miniMessage, resolvers);
     }
 
     public static TagResolver placeholder(String key, String value) {
