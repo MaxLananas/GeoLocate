@@ -38,8 +38,7 @@ public final class WorldMapper {
 
     public Optional<GeoPoint> getGeoPoint(Location location) {
         if (location == null || location.getWorld() == null) return Optional.empty();
-        String worldName = location.getWorld().getName();
-        CoordinateConverter converter = converters.get(worldName);
+        CoordinateConverter converter = converters.get(location.getWorld().getName());
         if (converter == null) return Optional.empty();
         return Optional.of(converter.convert(location));
     }
@@ -49,6 +48,10 @@ public final class WorldMapper {
         CoordinateConverter converter = converters.get(world.getName());
         if (converter == null) return Optional.empty();
         return Optional.of(converter.convert(x, y, z));
+    }
+
+    public Optional<CoordinateConverter> getConverter(String worldName) {
+        return Optional.ofNullable(converters.get(worldName));
     }
 
     public boolean isWorldMapped(String worldName) {
