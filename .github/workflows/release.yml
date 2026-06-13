@@ -67,7 +67,7 @@ jobs:
             echo "ERROR: Could not read version from gradle.properties"
             exit 1
           fi
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Current version: $VERSION"
 
       - name: Compute next semantic version
@@ -90,14 +90,14 @@ jobs:
           esac
 
           NEXT="$MAJOR.$MINOR.$PATCH"
-          echo "version=$NEXT" >> $GITHUB_OUTPUT
-          echo "tag=v$NEXT"    >> $GITHUB_OUTPUT
+          echo "version=$NEXT" >> "$GITHUB_OUTPUT"
+          echo "tag=v$NEXT"    >> "$GITHUB_OUTPUT"
           echo "Next version: $NEXT"
 
       - name: Update version in gradle.properties
         run: |
           NEXT="${{ steps.next_version.outputs.version }}"
-          sed -i "s/^version=.*/version=$NEXT/" gradle.properties
+          sed -i "s/^version=.*/version=${NEXT}/" gradle.properties
           grep "^version=" gradle.properties
 
       - name: Build release artifact
@@ -113,7 +113,29 @@ jobs:
           echo "Found $JAR_COUNT JAR file(s):"
           ls -lh build/libs/GeoLocate-*.jar
 
-      - name: Generate AI-powered release notes
+      - name: Collect git commit data
+        id: commits
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          PREVIOUS_TAG=$(git tag --sort=-version:refname \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+            | head -n 1 || true)
+
+          if [ -z "$PREVIOUS_TAG" ]; then
+            git log --pretty=format:"%H%x1F%s%x1F%an" HEAD > /tmp/raw_commits.txt
+            echo "range_label=Initial release — full commit history" >> "$GITHUB_OUTPUT"
+            echo "previous_tag=" >> "$GITHUB_OUTPUT"
+          else
+            git log --pretty=format:"%H%x1F%s%x1F%an" "${PREVIOUS_TAG}..HEAD" > /tmp/raw_commits.txt
+            echo "range_label=Changes since ${PREVIOUS_TAG}" >> "$GITHUB_OUTPUT"
+            echo "previous_tag=${PREVIOUS_TAG}" >> "$GITHUB_OUTPUT"
+          fi
+
+          COMMIT_COUNT=$(wc -l < /tmp/raw_commits.txt || echo 0)
+          echo "Collected $COMMIT_COUNT commit(s)."
+
+      - name: Call Groq API and build release notes
         id: notes
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
@@ -121,73 +143,89 @@ jobs:
           RELEASE_TITLE: ${{ inputs.release_title }}
           REPO: ${{ github.repository }}
           OWNER: ${{ github.repository_owner }}
+          RANGE_LABEL: ${{ steps.commits.outputs.range_label }}
+          PREVIOUS_TAG: ${{ steps.commits.outputs.previous_tag }}
         run: |
-          set -euo pipefail
+          python3 << 'PYEOF'
+          import os
+          import json
+          import subprocess
+          import urllib.request
+          import urllib.error
+          import time
+          import tempfile
 
-          # Determine commit range
-          PREVIOUS_TAG=$(git tag --sort=-version:refname \
-            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
-            | head -n 1 || true)
+          next_version  = os.environ["NEXT_VERSION"]
+          release_title = os.environ.get("RELEASE_TITLE", "").strip()
+          repo          = os.environ["REPO"]
+          owner         = os.environ["OWNER"]
+          range_label   = os.environ["RANGE_LABEL"]
+          previous_tag  = os.environ.get("PREVIOUS_TAG", "").strip()
+          groq_api_key  = os.environ["GROQ_API_KEY"]
 
-          if [ -z "$PREVIOUS_TAG" ]; then
-            RAW_COMMITS=$(git log --pretty=format:"%H %s %an" HEAD)
-            RANGE_LABEL="Initial release — full commit history"
-            COMPARE_LINE="**Repository:** [View all commits](https://github.com/${REPO}/commits/main)"
-          else
-            RAW_COMMITS=$(git log --pretty=format:"%H %s %an" "${PREVIOUS_TAG}..HEAD")
-            RANGE_LABEL="Changes since ${PREVIOUS_TAG}"
-            COMPARE_LINE="**Full diff:** [\`${PREVIOUS_TAG}\` -> \`${NEXT_VERSION}\`](https://github.com/${REPO}/compare/${PREVIOUS_TAG}...${NEXT_VERSION})"
-          fi
+          # Read commits written by the previous step (field separator = \x1F)
+          commits = []
+          try:
+              with open("/tmp/raw_commits.txt", "r", encoding="utf-8") as f:
+                  for line in f:
+                      line = line.rstrip("\n")
+                      if not line:
+                          continue
+                      parts = line.split("\x1f")
+                      if len(parts) < 3:
+                          continue
+                      sha, subject, author = parts[0], parts[1], "\x1f".join(parts[2:])
+                      commits.append({"sha": sha, "subject": subject, "author": author})
+          except FileNotFoundError:
+              pass
 
-          if [ -z "$RAW_COMMITS" ]; then
-            echo "WARNING: No commits found since last tag."
-            RAW_COMMITS="chore: no changes"
-          fi
+          if not commits:
+              commits = [{"sha": "0000000", "subject": "chore: no changes", "author": "unknown"}]
 
-          # Parse and categorise commits
-          COMMIT_LIST_MD=""
-          FEAT_LIST=""
-          FIX_LIST=""
-          PERF_LIST=""
-          REFACTOR_LIST=""
-          BREAK_LIST=""
-          OTHER_LIST=""
+          # Categorise commits by conventional commit type
+          import re
+          BREAKING_RE = re.compile(r'^[a-z]+(\([^)]+\))?!:')
+          TYPE_RE     = re.compile(r'^([a-z]+)(?:\([^)]+\))?!?:')
 
-          while IFS= read -r LINE; do
-            [ -z "$LINE" ] && continue
+          categories = {
+              "feat": [], "fix": [], "perf": [],
+              "refactor": [], "break": [], "other": []
+          }
+          commit_lines = []
 
-            HASH=$(echo "$LINE" | awk '{print $1}')
-            SHORT="${HASH:0:7}"
-            AUTHOR=$(echo "$LINE" | awk '{print $NF}')
-            MESSAGE=$(echo "$LINE" | awk '{$1=""; $NF=""; print $0}' | xargs)
-            URL="https://github.com/${REPO}/commit/${HASH}"
+          for c in commits:
+              sha     = c["sha"]
+              short   = sha[:7]
+              subject = c["subject"]
+              author  = c["author"]
+              url     = f"https://github.com/{repo}/commit/{sha}"
 
-            IS_BREAK=$(echo "$MESSAGE" | grep -cP '^[a-z]+(\([^)]+\))?!:' || true)
-            TYPE=$(echo "$MESSAGE" | grep -oP '^[a-z]+(?=(\([^)]+\))?!?:)' || true)
+              commit_lines.append(f"- [`{short}`]({url}) {subject} — **{author}**")
 
-            # Use %s format with the literal dash included in the string —
-            # avoids passing '-' as the first character which bash printf
-            # misinterprets as an option flag when using -- separator.
-            ENTRY=$(printf '%s' "- [\`${SHORT}\`](${URL}) ${MESSAGE} — **${AUTHOR}**")
-            COMMIT_LIST_MD="${COMMIT_LIST_MD}${ENTRY}"$'\n'
+              if BREAKING_RE.match(subject):
+                  categories["break"].append(subject)
 
-            if [ "$IS_BREAK" -gt 0 ]; then
-              BREAK_LIST="${BREAK_LIST}${MESSAGE}"$'\n'
-            fi
+              m = TYPE_RE.match(subject)
+              t = m.group(1) if m else ""
+              if   t == "feat":     categories["feat"].append(subject)
+              elif t == "fix":      categories["fix"].append(subject)
+              elif t == "perf":     categories["perf"].append(subject)
+              elif t == "refactor": categories["refactor"].append(subject)
+              else:                 categories["other"].append(subject)
 
-            case "$TYPE" in
-              feat)     FEAT_LIST="${FEAT_LIST}${MESSAGE}"$'\n' ;;
-              fix)      FIX_LIST="${FIX_LIST}${MESSAGE}"$'\n' ;;
-              perf)     PERF_LIST="${PERF_LIST}${MESSAGE}"$'\n' ;;
-              refactor) REFACTOR_LIST="${REFACTOR_LIST}${MESSAGE}"$'\n' ;;
-              *)        OTHER_LIST="${OTHER_LIST}${MESSAGE}"$'\n' ;;
-            esac
-          done <<< "$RAW_COMMITS"
+          def fmt_list(items):
+              return "\n".join(items) if items else "none"
 
-          # Build prompt for Groq
-          PROMPT="You are a principal software engineer and technical writer. You are writing the official release notes for GeoLocate ${NEXT_VERSION}, a production-grade Paper Minecraft server plugin (1.21.10+, Java 21) that converts Minecraft block coordinates (X/Z) to real-world WGS84 latitude/longitude using configurable Mercator or Linear map projections. The plugin exposes a public Java API, Bukkit events, PlaceholderAPI integration, and a coordinate caching layer backed by StampedLock and ConcurrentHashMap.
+          # Build Groq prompt
+          prompt = f"""You are a principal software engineer and technical writer. \
+          You are writing the official release notes for GeoLocate {next_version}, a production-grade \
+          Paper Minecraft server plugin (1.21.10+, Java 21) that converts Minecraft block coordinates \
+          (X/Z) to real-world WGS84 latitude/longitude using configurable Mercator or Linear map \
+          projections. The plugin exposes a public Java API, Bukkit events, PlaceholderAPI integration, \
+          and a coordinate caching layer backed by StampedLock and ConcurrentHashMap.
 
-          Your output will be published verbatim on the GitHub Releases page and read by experienced Java developers integrating this library into their own plugins.
+          Your output will be published verbatim on the GitHub Releases page and read by experienced \
+          Java developers integrating this library into their own plugins.
 
           Hard constraints:
           - Write exactly 3 paragraphs, no headers, no bullet points, no markdown formatting of any kind
@@ -198,149 +236,177 @@ jobs:
           - Do not use emojis, exclamation marks used for excitement, or filler phrases such as 'exciting', 'happy to announce', 'we are pleased'
           - Do not start any sentence with 'This release'
           - Write in the third person, past tense
-          - Write as if you reviewed every changed line of code
 
           New features:
-          ${FEAT_LIST:-none}
+          {fmt_list(categories['feat'])}
 
           Bug fixes:
-          ${FIX_LIST:-none}
+          {fmt_list(categories['fix'])}
 
           Performance improvements:
-          ${PERF_LIST:-none}
+          {fmt_list(categories['perf'])}
 
           Refactoring:
-          ${REFACTOR_LIST:-none}
+          {fmt_list(categories['refactor'])}
 
           Breaking changes:
-          ${BREAK_LIST:-none}
+          {fmt_list(categories['break'])}
 
           Other changes:
-          ${OTHER_LIST:-none}"
+          {fmt_list(categories['other'])}"""
 
-          # Call Groq API with retry
-          PAYLOAD=$(jq -n \
-            --arg model "llama-3.3-70b-versatile" \
-            --arg content "$PROMPT" \
-            '{
-              model: $model,
-              messages: [{ role: "user", content: $content }],
-              temperature: 0.15,
-              max_tokens: 700,
-              top_p: 0.9
-            }')
+          # Call Groq API with up to 3 retries
+          ai_text = None
+          payload = json.dumps({
+              "model": "llama-3.3-70b-versatile",
+              "messages": [{"role": "user", "content": prompt}],
+              "temperature": 0.15,
+              "max_tokens": 700,
+              "top_p": 0.9
+          }).encode("utf-8")
 
-          HTTP_STATUS=0
-          RESPONSE=""
-          for ATTEMPT in 1 2 3; do
-            RESPONSE=$(curl -s -w "\n%{http_code}" \
-              -X POST "https://api.groq.com/openai/v1/chat/completions" \
-              -H "Authorization: Bearer ${GROQ_API_KEY}" \
-              -H "Content-Type: application/json" \
-              --max-time 30 \
-              -d "$PAYLOAD")
-            HTTP_STATUS=$(echo "$RESPONSE" | tail -n1)
-            RESPONSE=$(echo "$RESPONSE" | head -n -1)
-            echo "Groq attempt $ATTEMPT — HTTP $HTTP_STATUS"
-            [ "$HTTP_STATUS" -eq 200 ] && break
-            sleep $((ATTEMPT * 3))
-          done
+          for attempt in range(1, 4):
+              try:
+                  req = urllib.request.Request(
+                      "https://api.groq.com/openai/v1/chat/completions",
+                      data=payload,
+                      headers={
+                          "Authorization": f"Bearer {groq_api_key}",
+                          "Content-Type": "application/json"
+                      },
+                      method="POST"
+                  )
+                  with urllib.request.urlopen(req, timeout=30) as resp:
+                      body = json.loads(resp.read().decode("utf-8"))
+                      ai_text = body["choices"][0]["message"]["content"].strip()
+                      print(f"Groq attempt {attempt} — HTTP 200")
+                      break
+              except Exception as exc:
+                  print(f"Groq attempt {attempt} — error: {exc}")
+                  if attempt < 3:
+                      time.sleep(attempt * 3)
 
-          if [ "$HTTP_STATUS" -ne 200 ]; then
-            echo "WARNING: Groq API returned HTTP $HTTP_STATUS after 3 attempts. Using fallback text."
-            AI_TEXT="Internal improvements, performance optimisations, and stability fixes were applied across multiple subsystems. Refer to the categorised changelog and commit list below for a complete account of changes introduced in this release."
-          else
-            AI_TEXT=$(echo "$RESPONSE" | jq -r \
-              'if .choices then .choices[0].message.content else empty end // ""')
-            if [ -z "$AI_TEXT" ] || [ "$AI_TEXT" = "null" ]; then
-              AI_TEXT="Internal improvements and stability fixes. See commit list below for details."
-            fi
-          fi
+          if not ai_text:
+              ai_text = (
+                  "Internal improvements, performance optimisations, and stability fixes "
+                  "were applied across multiple subsystems. "
+                  "Refer to the categorised changelog and commit list below for a complete "
+                  "account of changes introduced in this release."
+              )
 
-          # Resolve display name
-          if [ -n "$RELEASE_TITLE" ]; then
-            DISPLAY_NAME="$RELEASE_TITLE"
-          else
-            DISPLAY_NAME="GeoLocate ${NEXT_VERSION}"
-          fi
+          # Build compare line
+          if previous_tag:
+              compare_line = (
+                  f"**Full diff:** [`{previous_tag}` -> `{next_version}`]"
+                  f"(https://github.com/{repo}/compare/{previous_tag}...{next_version})"
+              )
+          else:
+              compare_line = (
+                  f"**Repository:** [View all commits]"
+                  f"(https://github.com/{repo}/commits/main)"
+              )
 
-          JITPACK_URL="https://jitpack.io/#${REPO}/${NEXT_VERSION}"
-          WIKI_URL="https://github.com/${REPO}/wiki"
+          jitpack_url = f"https://jitpack.io/#{repo}/{next_version}"
+          wiki_url    = f"https://github.com/{repo}/wiki"
+          display_name = release_title if release_title else f"GeoLocate {next_version}"
 
-          # write_section prints a markdown section only when CONTENT is non-empty.
-          # The bullet prefix is embedded in the format string to avoid passing
-          # a leading '-' as the first printf argument (bash builtin rejects it).
-          write_section() {
-            local TITLE="$1"
-            local CONTENT="$2"
-            if [ -n "$CONTENT" ]; then
-              printf '#### %s\n' "$TITLE"
-              while IFS= read -r ITEM; do
-                [ -z "$ITEM" ] && continue
-                printf '%s\n' "- ${ITEM}"
-              done <<< "$CONTENT"
-              printf '\n'
-            fi
-          }
+          # Build markdown sections
+          def md_section(title, items):
+              if not items:
+                  return ""
+              lines = [f"#### {title}", ""]
+              for item in items:
+                  lines.append(f"- {item}")
+              lines.append("")
+              return "\n".join(lines) + "\n"
 
-          BODY_FILE=$(mktemp)
+          sections = (
+              md_section("Breaking Changes", categories["break"]) +
+              md_section("New Features",     categories["feat"])  +
+              md_section("Bug Fixes",        categories["fix"])   +
+              md_section("Performance",      categories["perf"])  +
+              md_section("Refactoring",      categories["refactor"]) +
+              md_section("Other",            categories["other"])
+          )
 
-          {
-            printf '%s\n' "$AI_TEXT"
-            printf '\n---\n\n'
-            printf '### %s\n\n' "$RANGE_LABEL"
+          commit_md = "\n".join(commit_lines)
 
-            write_section "Breaking Changes" "$BREAK_LIST"
-            write_section "New Features"     "$FEAT_LIST"
-            write_section "Bug Fixes"        "$FIX_LIST"
-            write_section "Performance"      "$PERF_LIST"
-            write_section "Refactoring"      "$REFACTOR_LIST"
-            write_section "Other"            "$OTHER_LIST"
+          body = f"""{ai_text}
 
-            printf '#### All Commits\n\n'
-            printf '%s\n' "$COMMIT_LIST_MD"
-            printf '\n---\n\n'
-            printf '%s\n\n' "$COMPARE_LINE"
-            printf '---\n\n'
+---
 
-            printf '### Installation\n\n'
-            printf '**Gradle (Kotlin DSL)**\n\n'
-            printf '```kotlin\n'
-            printf 'repositories {\n'
-            printf '    maven("https://jitpack.io")\n'
-            printf '}\n\n'
-            printf 'dependencies {\n'
-            printf '    compileOnly("com.github.%s:GeoLocate:%s")\n' "$OWNER" "$NEXT_VERSION"
-            printf '}\n'
-            printf '```\n\n'
+### {range_label}
 
-            printf '**Gradle (Groovy DSL)**\n\n'
-            printf '```groovy\n'
-            printf 'repositories {\n'
-            printf "    maven { url 'https://jitpack.io' }\n"
-            printf '}\n\n'
-            printf 'dependencies {\n'
-            printf "    compileOnly 'com.github.%s:GeoLocate:%s'\n" "$OWNER" "$NEXT_VERSION"
-            printf '}\n'
-            printf '```\n\n'
+{sections}
+#### All Commits
 
-            printf '**plugin.yml**\n\n'
-            printf '```yaml\n'
-            printf 'depend:\n'
-            printf '  - GeoLocate\n'
-            printf '```\n\n'
+{commit_md}
 
-            printf '| Resource | Link |\n'
-            printf '|---|---|\n'
-            printf '| JitPack | [com.github.%s:GeoLocate:%s](%s) |\n' "$OWNER" "$NEXT_VERSION" "$JITPACK_URL"
-            printf '| Wiki | [Documentation](%s) |\n' "$WIKI_URL"
-            printf '| API | [GeoLocateAPI.java](https://github.com/%s/blob/main/src/main/java/dev/geolocate/api/GeoLocateAPI.java) |\n' "$REPO"
-            printf '| Commands | [Commands](https://github.com/%s/wiki/Commands) |\n' "$REPO"
-            printf '| Configuration | [Configuration](https://github.com/%s/wiki/Configuration) |\n' "$REPO"
-          } > "$BODY_FILE"
+---
 
-          echo "body_file=$BODY_FILE"         >> $GITHUB_OUTPUT
-          echo "display_name=$DISPLAY_NAME"   >> $GITHUB_OUTPUT
+{compare_line}
+
+---
+
+### Installation
+
+**Gradle (Kotlin DSL)**
+
+```kotlin
+repositories {{
+    maven("https://jitpack.io")
+}}
+
+dependencies {{
+    compileOnly("com.github.{owner}:GeoLocate:{next_version}")
+}}
+```
+
+**Gradle (Groovy DSL)**
+
+```groovy
+repositories {{
+    maven {{ url 'https://jitpack.io' }}
+}}
+
+dependencies {{
+    compileOnly 'com.github.{owner}:GeoLocate:{next_version}'
+}}
+```
+
+**plugin.yml**
+
+```yaml
+depend:
+  - GeoLocate
+```
+
+| Resource | Link |
+|---|---|
+| JitPack | [com.github.{owner}:GeoLocate:{next_version}]({jitpack_url}) |
+| Wiki | [Documentation]({wiki_url}) |
+| API | [GeoLocateAPI.java](https://github.com/{repo}/blob/main/src/main/java/dev/geolocate/api/GeoLocateAPI.java) |
+| Commands | [Commands](https://github.com/{repo}/wiki/Commands) |
+| Configuration | [Configuration](https://github.com/{repo}/wiki/Configuration) |
+"""
+
+          # Write body to temp file
+          body_file = tempfile.NamedTemporaryFile(
+              mode="w", suffix=".md", delete=False, encoding="utf-8"
+          )
+          body_file.write(body)
+          body_file.close()
+
+          print(f"Release body written to: {body_file.name}")
+
+          # Write outputs
+          github_output = os.environ.get("GITHUB_OUTPUT", "")
+          if github_output:
+              with open(github_output, "a", encoding="utf-8") as out:
+                  out.write(f"body_file={body_file.name}\n")
+                  out.write(f"display_name={display_name}\n")
+
+          PYEOF
 
       - name: Commit version bump
         if: ${{ inputs.dry_run == false }}
@@ -377,8 +443,8 @@ jobs:
       - name: Dry run summary
         if: ${{ inputs.dry_run == true }}
         run: |
-          echo "=== DRY RUN — no changes were pushed ==="
-          echo "Would have released: ${{ steps.next_version.outputs.tag }}"
-          echo "Display name: ${{ steps.notes.outputs.display_name }}"
-          echo "Release body preview:"
+          echo "=== DRY RUN — no changes pushed ==="
+          echo "Would release: ${{ steps.next_version.outputs.tag }}"
+          echo "Display name:  ${{ steps.notes.outputs.display_name }}"
+          echo "Body preview:"
           cat "${{ steps.notes.outputs.body_file }}"
