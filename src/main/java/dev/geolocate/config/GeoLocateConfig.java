@@ -21,6 +21,9 @@ public final class GeoLocateConfig {
     private int notifyDistance;
     private int cacheSize;
     private int decimalPlaces;
+    private int commandCooldownSeconds;
+    private boolean actionBarEnabled;
+    private int actionBarUpdateInterval;
     private String prefix;
     private Map<String, String> messages;
 
@@ -40,6 +43,9 @@ public final class GeoLocateConfig {
         notifyDistance = config.getInt("settings.notify-distance", 100);
         cacheSize = config.getInt("settings.cache-size", 500);
         decimalPlaces = config.getInt("settings.decimal-places", 6);
+        commandCooldownSeconds = config.getInt("settings.command-cooldown-seconds", 3);
+        actionBarEnabled = config.getBoolean("settings.actionbar-enabled", false);
+        actionBarUpdateInterval = config.getInt("settings.actionbar-update-interval-ticks", 20);
         prefix = config.getString("messages.prefix", "[GeoLocate] ");
 
         loadMessages(config);
@@ -66,8 +72,7 @@ public final class GeoLocateConfig {
             boolean enabled = ws.getBoolean("enabled", true);
             if (!enabled) continue;
 
-            String projName = ws.getString("projection", "LINEAR");
-            MapProjection projection = MapProjection.fromString(projName);
+            MapProjection projection = MapProjection.fromString(ws.getString("projection", "LINEAR"));
 
             double minLat = ws.getDouble("bounds.min-lat", -85.05112878);
             double maxLat = ws.getDouble("bounds.max-lat", 85.05112878);
@@ -104,6 +109,9 @@ public final class GeoLocateConfig {
     public int getNotifyDistance() { return notifyDistance; }
     public int getCacheSize() { return cacheSize; }
     public int getDecimalPlaces() { return decimalPlaces; }
+    public int getCommandCooldownSeconds() { return commandCooldownSeconds; }
+    public boolean isActionBarEnabled() { return actionBarEnabled; }
+    public int getActionBarUpdateInterval() { return actionBarUpdateInterval; }
     public String getPrefix() { return prefix; }
 
     public String getMessage(String key) {
