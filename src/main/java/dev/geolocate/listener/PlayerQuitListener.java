@@ -16,5 +16,6 @@ public final class PlayerQuitListener implements Listener {
     @EventHandler
     public void onPlayerQuit(PlayerQuitEvent event) {
         plugin.getPreferenceStorage().saveAll();
+        plugin.getAPI().removePlayer(event.getPlayer().getUniqueId());
     }
 }
