@@ -2,28 +2,27 @@ package dev.geolocate.mapping;
 
 import org.bukkit.Location;
 
-import java.util.LinkedHashMap;
-import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.StampedLock;
 
 public final class CoordinateConverter {
 
     private final WorldBoundingBox box;
     private final MapProjection projection;
     private final int decimalPlaces;
-    private final Map<Long, GeoPoint> cache;
     private final int cacheSize;
+    private final ConcurrentHashMap<Long, GeoPoint> cache;
+    private final StampedLock lock;
+    private final double scale;
 
     public CoordinateConverter(WorldBoundingBox box, MapProjection projection, int decimalPlaces, int cacheSize) {
         this.box = box;
         this.projection = projection;
         this.decimalPlaces = decimalPlaces;
         this.cacheSize = cacheSize;
-        this.cache = new LinkedHashMap<>(cacheSize, 0.75f, true) {
-            @Override
-            protected boolean removeEldestEntry(Map.Entry<Long, GeoPoint> eldest) {
-                return size() > cacheSize;
-            }
-        };
+        this.cache = new ConcurrentHashMap<>(cacheSize);
+        this.lock = new StampedLock();
+        this.scale = Math.pow(10, decimalPlaces);
     }
 
     public GeoPoint convert(Location location) {
@@ -32,16 +31,36 @@ public final class CoordinateConverter {
 
     public GeoPoint convert(double x, double y, double z) {
         long cacheKey = buildCacheKey(x, z);
+
+        long stamp = lock.tryOptimisticRead();
         GeoPoint cached = cache.get(cacheKey);
-        if (cached != null) {
+        if (lock.validate(stamp) && cached != null) {
             return new GeoPoint(cached.getLatitude(), cached.getLongitude(), normalizeAltitude(y));
         }
 
-        GeoPoint point = projection.toGeoPoint(x, z, box);
-        GeoPoint rounded = round(point);
-        cache.put(cacheKey, rounded);
+        stamp = lock.readLock();
+        try {
+            cached = cache.get(cacheKey);
+            if (cached != null) {
+                return new GeoPoint(cached.getLatitude(), cached.getLongitude(), normalizeAltitude(y));
+            }
+        } finally {
+            lock.unlockRead(stamp);
+        }
 
-        return new GeoPoint(rounded.getLatitude(), rounded.getLongitude(), normalizeAltitude(y));
+        GeoPoint computed = round(projection.toGeoPoint(x, z, box));
+
+        stamp = lock.writeLock();
+        try {
+            if (cache.size() >= cacheSize) {
+                cache.clear();
+            }
+            cache.putIfAbsent(cacheKey, computed);
+        } finally {
+            lock.unlockWrite(stamp);
+        }
+
+        return new GeoPoint(computed.getLatitude(), computed.getLongitude(), normalizeAltitude(y));
     }
 
     public double[] convertToMinecraft(double lat, double lon) {
@@ -49,7 +68,6 @@ public final class CoordinateConverter {
     }
 
     private GeoPoint round(GeoPoint point) {
-        double scale = Math.pow(10, decimalPlaces);
         double lat = Math.round(point.getLatitude() * scale) / scale;
         double lon = Math.round(point.getLongitude() * scale) / scale;
         return new GeoPoint(lat, lon);
@@ -66,7 +84,12 @@ public final class CoordinateConverter {
     }
 
     public void clearCache() {
-        cache.clear();
+        long stamp = lock.writeLock();
+        try {
+            cache.clear();
+        } finally {
+            lock.unlockWrite(stamp);
+        }
     }
 
     public int getCacheSize() {
