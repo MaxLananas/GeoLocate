@@ -53,3 +53,12 @@ point.ifPresent(geo -> {
 
 Optional<String> link = api.getGoogleMapsLink(player);
 link.ifPresent(url -> player.sendMessage(url));
+```
+
+## Documentation
+
+Full documentation is available in the [Wiki](../../wiki).
+
+## License
+
+MIT License
