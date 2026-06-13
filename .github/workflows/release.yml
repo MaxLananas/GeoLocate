@@ -73,58 +73,43 @@ jobs:
       - name: Build
         run: ./gradlew build --no-daemon --parallel --build-cache
 
-      - name: Collect commits
-        id: commits
+      - name: Generate release notes
+        id: notes
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          NEXT_VERSION: v${{ steps.next_version.outputs.version }}
+          RELEASE_TITLE: ${{ inputs.release_title }}
+          REPO: ${{ github.repository }}
+          OWNER: ${{ github.repository_owner }}
+          VERSION_BUMP: ${{ inputs.version_bump }}
         run: |
-          REPO="${{ github.repository }}"
           PREVIOUS_TAG=$(git tag --sort=-version:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1)
 
           if [ -z "$PREVIOUS_TAG" ]; then
-            RAW=$(git log --pretty=format:"%H|%s|%an" HEAD)
+            RAW_COMMITS=$(git log --pretty=format:"%H %s %an" HEAD)
             RANGE_LABEL="Initial release — full history"
+            COMPARE_LINE="**Full history:** [All commits](https://github.com/${REPO}/commits/${NEXT_VERSION})"
           else
-            RAW=$(git log --pretty=format:"%H|%s|%an" "$PREVIOUS_TAG"..HEAD)
-            RANGE_LABEL="Changes since $PREVIOUS_TAG"
+            RAW_COMMITS=$(git log --pretty=format:"%H %s %an" "${PREVIOUS_TAG}..HEAD")
+            RANGE_LABEL="Changes since ${PREVIOUS_TAG}"
+            COMPARE_LINE="**Full diff:** [${PREVIOUS_TAG} → ${NEXT_VERSION}](https://github.com/${REPO}/compare/${PREVIOUS_TAG}...${NEXT_VERSION})"
           fi
 
-          COMMIT_LIST=""
+          COMMIT_LIST_MD=""
           COMMIT_LIST_PLAIN=""
 
-          while IFS='|' read -r HASH MESSAGE AUTHOR; do
-            [ -z "$HASH" ] && continue
+          while IFS= read -r LINE; do
+            [ -z "$LINE" ] && continue
+            HASH=$(echo "$LINE" | awk '{print $1}')
             SHORT="${HASH:0:7}"
-            URL="https://github.com/$REPO/commit/$HASH"
-            COMMIT_LIST+="- [\`$SHORT\`]($URL) **$MESSAGE** — $AUTHOR"$'\n'
-            COMMIT_LIST_PLAIN+="- [$SHORT] $MESSAGE (by $AUTHOR)"$'\n'
-          done <<< "$RAW"
+            AUTHOR=$(echo "$LINE" | awk '{print $NF}')
+            MESSAGE=$(echo "$LINE" | awk '{$1=""; $NF=""; print}' | xargs)
+            URL="https://github.com/${REPO}/commit/${HASH}"
+            COMMIT_LIST_MD+="- [\`${SHORT}\`](${URL}) **${MESSAGE}** — ${AUTHOR}"$'\n'
+            COMMIT_LIST_PLAIN+="- [${SHORT}] ${MESSAGE} (by ${AUTHOR})"$'\n'
+          done <<< "$RAW_COMMITS"
 
-          {
-            echo "list<<COMMITS_EOF"
-            printf '%s' "$COMMIT_LIST"
-            echo ""
-            echo "COMMITS_EOF"
-          } >> $GITHUB_OUTPUT
-
-          {
-            echo "plain<<PLAIN_EOF"
-            printf '%s' "$COMMIT_LIST_PLAIN"
-            echo ""
-            echo "PLAIN_EOF"
-          } >> $GITHUB_OUTPUT
-
-          echo "range=$RANGE_LABEL" >> $GITHUB_OUTPUT
-          echo "previous_tag=$PREVIOUS_TAG" >> $GITHUB_OUTPUT
-
-      - name: Generate AI description
-        id: ai
-        env:
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-        run: |
-          NEXT_VERSION="v${{ steps.next_version.outputs.version }}"
-          COMMITS_PLAIN="${{ steps.commits.outputs.plain }}"
-          TITLE="${{ inputs.release_title }}"
-
-          PROMPT="You are a senior software engineer writing professional release notes for a Java Paper Minecraft plugin library called GeoLocate. GeoLocate maps Minecraft block coordinates to real-world latitude and longitude with Google Maps links. Write a concise, technical, and professional release description in English for version $NEXT_VERSION. The title is: '$TITLE'. Here are the commits included in this release:\n$COMMITS_PLAIN\n\nWrite 2 to 4 short paragraphs. Be precise and technical. Do not use emojis. Do not repeat the commit list. Focus on what changed functionally and why it matters to developers using the library. Output only the description text, no title, no markdown headers."
+          PROMPT="You are a senior software engineer writing professional release notes for a Java Paper Minecraft plugin library called GeoLocate. GeoLocate maps Minecraft block coordinates to real-world latitude and longitude with Google Maps links. Write a concise, technical, and professional release description in English for version ${NEXT_VERSION}. Here are the commits included in this release: ${COMMIT_LIST_PLAIN} Write 2 to 4 short paragraphs. Be precise and technical. Do not use emojis. Do not repeat the commit list. Focus on what changed functionally and why it matters to developers using the library. Output only the description text, no title, no markdown headers."
 
           PAYLOAD=$(jq -n \
             --arg model "llama3-70b-8192" \
@@ -137,65 +122,47 @@ jobs:
             }')
 
           RESPONSE=$(curl -s -X POST "https://api.groq.com/openai/v1/chat/completions" \
-            -H "Authorization: Bearer $GROQ_API_KEY" \
+            -H "Authorization: Bearer ${GROQ_API_KEY}" \
             -H "Content-Type: application/json" \
             -d "$PAYLOAD")
 
           AI_TEXT=$(echo "$RESPONSE" | jq -r '.choices[0].message.content // "No AI description available."')
 
-          {
-            echo "description<<AI_EOF"
-            printf '%s' "$AI_TEXT"
-            echo ""
-            echo "AI_EOF"
-          } >> $GITHUB_OUTPUT
+          JITPACK_URL="https://jitpack.io/#${REPO}/${NEXT_VERSION}"
+          WIKI_URL="https://github.com/${REPO}/wiki"
 
-      - name: Build release body
-        id: body
-        run: |
-          REPO="${{ github.repository }}"
-          NEXT_VERSION="v${{ steps.next_version.outputs.version }}"
-          PREVIOUS_TAG="${{ steps.commits.outputs.previous_tag }}"
-          RANGE_LABEL="${{ steps.commits.outputs.range }}"
-          AI_DESC="${{ steps.ai.outputs.description }}"
-          COMMIT_LIST="${{ steps.commits.outputs.list }}"
-
-          JITPACK_URL="https://jitpack.io/#$REPO/$NEXT_VERSION"
-          WIKI_URL="https://github.com/$REPO/wiki"
-
-          BODY=""
-          BODY+="$AI_DESC"$'\n\n'
-          BODY+="---"$'\n\n'
-          BODY+="### $RANGE_LABEL"$'\n\n'
-          BODY+="$COMMIT_LIST"$'\n'
-          BODY+="---"$'\n\n'
-
-          if [ -n "$PREVIOUS_TAG" ]; then
-            COMPARE_URL="https://github.com/$REPO/compare/$PREVIOUS_TAG...$NEXT_VERSION"
-            BODY+="**Full diff:** [$PREVIOUS_TAG → $NEXT_VERSION]($COMPARE_URL)"$'\n\n'
+          if [ -n "$RELEASE_TITLE" ]; then
+            DISPLAY_NAME="$RELEASE_TITLE"
           else
-            BODY+="**Full history:** [All commits](https://github.com/$REPO/commits/$NEXT_VERSION)"$'\n\n'
+            DISPLAY_NAME="GeoLocate ${NEXT_VERSION}"
           fi
 
-          BODY+="---"$'\n\n'
-          BODY+="### Using GeoLocate in your project"$'\n\n'
-          BODY+='```kotlin'$'\n'
-          BODY+="repositories {"$'\n'
-          BODY+="    maven(\"https://jitpack.io\")"$'\n'
-          BODY+="}"$'\n\n'
-          BODY+="dependencies {"$'\n'
-          BODY+="    compileOnly(\"com.github.${{ github.repository_owner }}:GeoLocate:$NEXT_VERSION\")"$'\n'
-          BODY+="}"$'\n'
-          BODY+='```'$'\n\n'
-          BODY+="- [JitPack]($JITPACK_URL)"$'\n'
-          BODY+="- [Documentation / Wiki]($WIKI_URL)"$'\n'
+          BODY_FILE=$(mktemp)
 
           {
-            echo "body<<BODY_EOF"
-            printf '%s' "$BODY"
-            echo ""
-            echo "BODY_EOF"
-          } >> $GITHUB_OUTPUT
+            printf '%s\n\n' "$AI_TEXT"
+            printf '---\n\n'
+            printf '### %s\n\n' "$RANGE_LABEL"
+            printf '%s\n' "$COMMIT_LIST_MD"
+            printf '---\n\n'
+            printf '%s\n\n' "$COMPARE_LINE"
+            printf '---\n\n'
+            printf '### Using GeoLocate in your project\n\n'
+            printf '```kotlin\n'
+            printf 'repositories {\n'
+            printf '    maven("https://jitpack.io")\n'
+            printf '}\n\n'
+            printf 'dependencies {\n'
+            printf '    compileOnly("com.github.%s:GeoLocate:%s")\n' "$OWNER" "$NEXT_VERSION"
+            printf '}\n'
+            printf '```\n\n'
+            printf '- [JitPack](%s)\n' "$JITPACK_URL"
+            printf '- [Documentation / Wiki](%s)\n' "$WIKI_URL"
+          } > "$BODY_FILE"
+
+          echo "body_file=$BODY_FILE" >> $GITHUB_OUTPUT
+          echo "display_name=$DISPLAY_NAME" >> $GITHUB_OUTPUT
+          echo "tag=${NEXT_VERSION}" >> $GITHUB_OUTPUT
 
       - name: Commit version bump
         run: |
@@ -207,16 +174,15 @@ jobs:
 
       - name: Create and push tag
         run: |
-          TAG="v${{ steps.next_version.outputs.version }}"
-          git tag "$TAG"
-          git push origin "$TAG"
+          git tag "${{ steps.notes.outputs.tag }}"
+          git push origin "${{ steps.notes.outputs.tag }}"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ steps.next_version.outputs.version }}
-          name: ${{ inputs.release_title != '' && inputs.release_title || format('GeoLocate v{0}', steps.next_version.outputs.version) }}
-          body: ${{ steps.body.outputs.body }}
+          tag_name: ${{ steps.notes.outputs.tag }}
+          name: ${{ steps.notes.outputs.display_name }}
+          body_path: ${{ steps.notes.outputs.body_file }}
           files: build/libs/GeoLocate-*.jar
           draft: false
           prerelease: false
