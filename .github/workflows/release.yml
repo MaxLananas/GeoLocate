@@ -88,31 +88,36 @@ jobs:
       - name: Generate changelog
         id: changelog
         run: |
-          PREVIOUS_TAG=$(git tag --sort=-version:refname | head -n 1)
+          REPO="${{ github.repository }}"
           NEXT_VERSION="v${{ steps.next_version.outputs.version }}"
 
-          if [ -z "$PREVIOUS_TAG" ]; then
-            COMMITS=$(git log --pretty=format:"%H|%s|%an" HEAD)
-          else
-            COMMITS=$(git log --pretty=format:"%H|%s|%an" "$PREVIOUS_TAG"..HEAD)
-          fi
+          PREVIOUS_TAG=$(git tag --sort=-version:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1)
 
-          REPO="${{ github.repository }}"
-          BODY=""
+          if [ -z "$PREVIOUS_TAG" ]; then
+            COMMITS=$(git log --pretty=format:"%H|%s|%an|%ae" HEAD)
+            RANGE_LABEL="Initial release — all commits"
+          else
+            COMMITS=$(git log --pretty=format:"%H|%s|%an|%ae" "$PREVIOUS_TAG"..HEAD)
+            RANGE_LABEL="Changes since $PREVIOUS_TAG"
+          fi
 
           if [ -n "${{ inputs.release_title }}" ]; then
-            BODY="## ${{ inputs.release_title }}"$'\n\n'
+            HEADER="## ${{ inputs.release_title }}"
+          else
+            HEADER="## $NEXT_VERSION"
           fi
 
-          BODY+="## What's Changed"$'\n\n'
+          BODY="$HEADER"$'\n\n'
+          BODY+="### $RANGE_LABEL"$'\n\n'
 
           if [ -z "$COMMITS" ]; then
-            BODY+="_No commits since last release._"$'\n'
+            BODY+="_No new commits._"$'\n'
           else
-            while IFS='|' read -r HASH MESSAGE AUTHOR; do
+            while IFS='|' read -r HASH MESSAGE AUTHOR EMAIL; do
               SHORT="${HASH:0:7}"
-              URL="https://github.com/$REPO/commit/$HASH"
-              BODY+="- [\`$SHORT\`]($URL) $MESSAGE — **$AUTHOR**"$'\n'
+              COMMIT_URL="https://github.com/$REPO/commit/$HASH"
+              AUTHOR_URL="https://github.com/$AUTHOR"
+              BODY+="- [\`$SHORT\`]($COMMIT_URL) **$MESSAGE** — [$AUTHOR]($AUTHOR_URL)"$'\n'
             done <<< "$COMMITS"
           fi
 
@@ -120,12 +125,18 @@ jobs:
 
           if [ -n "$PREVIOUS_TAG" ]; then
             COMPARE_URL="https://github.com/$REPO/compare/$PREVIOUS_TAG...$NEXT_VERSION"
+            BODY+="---"$'\n'
             BODY+="**Full diff:** [$PREVIOUS_TAG → $NEXT_VERSION]($COMPARE_URL)"$'\n'
+          else
+            FULL_URL="https://github.com/$REPO/commits/$NEXT_VERSION"
+            BODY+="---"$'\n'
+            BODY+="**Full history:** [All commits]($FULL_URL)"$'\n'
           fi
 
           {
             echo "body<<CHANGELOG_EOF"
-            echo "$BODY"
+            printf '%s' "$BODY"
+            echo ""
             echo "CHANGELOG_EOF"
           } >> $GITHUB_OUTPUT
 
@@ -134,7 +145,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add gradle.properties
-          git commit -m "chore: bump version to ${{ steps.next_version.outputs.version }}"
+          git commit -m "chore(release): bump version to ${{ steps.next_version.outputs.version }}"
           git push origin HEAD
 
       - name: Create and push tag
@@ -147,8 +158,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.next_version.outputs.version }}
-          name: ${{ inputs.release_title != '' && inputs.release_title || format('v{0}', steps.next_version.outputs.version) }}
-          body: ${{ steps.changelog.body }}
+          name: ${{ inputs.release_title != '' && inputs.release_title || format('GeoLocate v{0}', steps.next_version.outputs.version) }}
+          body: ${{ steps.changelog.outputs.body }}
           files: build/libs/GeoLocate-*.jar
           draft: false
           prerelease: false
