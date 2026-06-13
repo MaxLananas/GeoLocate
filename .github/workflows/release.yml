@@ -105,29 +105,34 @@ jobs:
             MESSAGE=$(echo "$LINE" | awk '{$1=""; $NF=""; print}' | xargs)
             URL="https://github.com/${REPO}/commit/${HASH}"
             COMMIT_LIST_MD="${COMMIT_LIST_MD}- [\`${SHORT}\`](${URL}) **${MESSAGE}** — ${AUTHOR}"$'\n'
-            COMMIT_LIST_PLAIN="${COMMIT_LIST_PLAIN}- [${SHORT}] ${MESSAGE} (by ${AUTHOR})"$'\n'
+            COMMIT_LIST_PLAIN="${COMMIT_LIST_PLAIN}* ${MESSAGE} (${AUTHOR})"$'\n'
           done <<< "$RAW_COMMITS"
 
+          PROMPT="You are a senior software engineer writing professional GitHub release notes for a Java library called GeoLocate. GeoLocate is a Paper Minecraft plugin library that converts Minecraft block coordinates to real-world latitude and longitude and generates Google Maps links. Version ${NEXT_VERSION} includes the following changes: ${COMMIT_LIST_PLAIN} Write exactly 3 short paragraphs in plain English. Be technical and precise. Do not use emojis. Do not list the commits again. Focus on what changed and why it matters for developers integrating this library. Output only the paragraphs, no headers, no markdown formatting."
+
           PAYLOAD=$(jq -n \
-            --arg model "llama3-70b-8192" \
-            --arg commits "$COMMIT_LIST_PLAIN" \
-            --arg version "$NEXT_VERSION" \
+            --arg model "llama-3.1-8b-instant" \
+            --arg content "$PROMPT" \
             '{
               model: $model,
-              messages: [{
-                role: "user",
-                content: ("You are a senior software engineer writing professional release notes for a Java Paper Minecraft plugin library called GeoLocate. GeoLocate maps Minecraft block coordinates to real-world latitude and longitude with Google Maps links. Write a concise, technical, and professional release description in English for version " + $version + ". Here are the commits: " + $commits + " Write 2 to 4 short paragraphs. Be precise and technical. Do not use emojis. Do not repeat the commit list. Focus on what changed functionally and why it matters to developers using the library. Output only the description text, no title, no markdown headers.")
-              }],
-              temperature: 0.4,
-              max_tokens: 512
+              messages: [{ role: "user", content: $content }],
+              temperature: 0.3,
+              max_tokens: 400
             }')
 
-          RESPONSE=$(curl -s -X POST "https://api.groq.com/openai/v1/chat/completions" \
+          RESPONSE=$(curl -s \
+            -X POST "https://api.groq.com/openai/v1/chat/completions" \
             -H "Authorization: Bearer ${GROQ_API_KEY}" \
             -H "Content-Type: application/json" \
             -d "$PAYLOAD")
 
-          AI_TEXT=$(echo "$RESPONSE" | jq -r '.choices[0].message.content // "No AI description available."')
+          echo "Groq raw response: $RESPONSE"
+
+          AI_TEXT=$(echo "$RESPONSE" | jq -r 'if .choices then .choices[0].message.content else .error.message end // "AI description unavailable."')
+
+          if [ -z "$AI_TEXT" ] || [ "$AI_TEXT" = "null" ]; then
+            AI_TEXT="This release includes internal improvements and bug fixes."
+          fi
 
           JITPACK_URL="https://jitpack.io/#${REPO}/${NEXT_VERSION}"
           WIKI_URL="https://github.com/${REPO}/wiki"
