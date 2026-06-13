@@ -10,24 +10,24 @@ import org.bukkit.entity.Player;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
-import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 public final class RegionManager {
 
     private final GeoLocate plugin;
-    private final Map<String, GeoRegion> regions;
-    private final Map<UUID, Set<String>> playerRegions;
+    // Region ID -> GeoRegion (lock-free reads)
+    private final ConcurrentHashMap<String, GeoRegion> regions;
+    // Player UUID -> Set of region IDs the player is currently inside
+    private final ConcurrentHashMap<UUID, Set<String>> playerRegions;
 
     public RegionManager(GeoLocate plugin) {
         this.plugin = plugin;
-        this.regions = new HashMap<>();
-        this.playerRegions = new HashMap<>();
+        this.regions = new ConcurrentHashMap<>();
+        this.playerRegions = new ConcurrentHashMap<>();
     }
 
     public void registerRegion(GeoRegion region) {
@@ -43,9 +43,10 @@ public final class RegionManager {
     }
 
     public Optional<GeoRegion> getRegionByName(String name) {
-        return regions.values().stream()
-                .filter(r -> r.getName().equalsIgnoreCase(name))
-                .findFirst();
+        for (GeoRegion region : regions.values()) {
+            if (region.getName().equalsIgnoreCase(name)) return Optional.of(region);
+        }
+        return Optional.empty();
     }
 
     public List<GeoRegion> getRegionsContaining(GeoPoint point) {
@@ -58,15 +59,18 @@ public final class RegionManager {
 
     public void updatePlayer(Player player, GeoPoint point) {
         UUID uuid = player.getUniqueId();
-        Set<String> previous = playerRegions.getOrDefault(uuid, new HashSet<>());
-        Set<String> current = new HashSet<>();
+
+        // Use a ConcurrentHashMap key-set as a concurrent Set
+        Set<String> previous = playerRegions.getOrDefault(uuid, Collections.emptySet());
+        Set<String> current = ConcurrentHashMap.newKeySet();
 
         for (GeoRegion region : regions.values()) {
             if (region.contains(point)) {
-                current.add(region.getId());
-                if (!previous.contains(region.getId())) {
-                    PlayerEnterGeoRegionEvent event = new PlayerEnterGeoRegionEvent(player, region, point);
-                    plugin.getServer().getPluginManager().callEvent(event);
+                String id = region.getId();
+                current.add(id);
+                if (!previous.contains(id)) {
+                    plugin.getServer().getPluginManager()
+                            .callEvent(new PlayerEnterGeoRegionEvent(player, region, point));
                 }
             }
         }
@@ -75,8 +79,8 @@ public final class RegionManager {
             if (!current.contains(id)) {
                 GeoRegion region = regions.get(id);
                 if (region != null) {
-                    PlayerLeaveGeoRegionEvent event = new PlayerLeaveGeoRegionEvent(player, region, point);
-                    plugin.getServer().getPluginManager().callEvent(event);
+                    plugin.getServer().getPluginManager()
+                            .callEvent(new PlayerLeaveGeoRegionEvent(player, region, point));
                 }
             }
         }
@@ -85,12 +89,15 @@ public final class RegionManager {
     }
 
     public Set<String> getPlayerRegionIds(UUID uuid) {
-        return Collections.unmodifiableSet(playerRegions.getOrDefault(uuid, new HashSet<>()));
+        return Collections.unmodifiableSet(
+                playerRegions.getOrDefault(uuid, Collections.emptySet())
+        );
     }
 
     public List<GeoRegion> getPlayerRegions(UUID uuid) {
-        List<GeoRegion> result = new ArrayList<>();
-        for (String id : playerRegions.getOrDefault(uuid, new HashSet<>())) {
+        Set<String> ids = playerRegions.getOrDefault(uuid, Collections.emptySet());
+        List<GeoRegion> result = new ArrayList<>(ids.size());
+        for (String id : ids) {
             GeoRegion r = regions.get(id);
             if (r != null) result.add(r);
         }
