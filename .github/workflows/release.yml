@@ -91,7 +91,7 @@ jobs:
 
           NEXT="$MAJOR.$MINOR.$PATCH"
           echo "version=$NEXT" >> $GITHUB_OUTPUT
-          echo "tag=v$NEXT" >> $GITHUB_OUTPUT
+          echo "tag=v$NEXT"    >> $GITHUB_OUTPUT
           echo "Next version: $NEXT"
 
       - name: Update version in gradle.properties
@@ -124,7 +124,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          # ── Determine commit range ────────────────────────────────────────
+          # Determine commit range
           PREVIOUS_TAG=$(git tag --sort=-version:refname \
             | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
             | head -n 1 || true)
@@ -136,7 +136,7 @@ jobs:
           else
             RAW_COMMITS=$(git log --pretty=format:"%H %s %an" "${PREVIOUS_TAG}..HEAD")
             RANGE_LABEL="Changes since ${PREVIOUS_TAG}"
-            COMPARE_LINE="**Full diff:** [\`${PREVIOUS_TAG}\` → \`${NEXT_VERSION}\`](https://github.com/${REPO}/compare/${PREVIOUS_TAG}...${NEXT_VERSION})"
+            COMPARE_LINE="**Full diff:** [\`${PREVIOUS_TAG}\` -> \`${NEXT_VERSION}\`](https://github.com/${REPO}/compare/${PREVIOUS_TAG}...${NEXT_VERSION})"
           fi
 
           if [ -z "$RAW_COMMITS" ]; then
@@ -144,7 +144,7 @@ jobs:
             RAW_COMMITS="chore: no changes"
           fi
 
-          # ── Parse and categorise commits ──────────────────────────────────
+          # Parse and categorise commits
           COMMIT_LIST_MD=""
           FEAT_LIST=""
           FIX_LIST=""
@@ -158,17 +158,17 @@ jobs:
 
             HASH=$(echo "$LINE" | awk '{print $1}')
             SHORT="${HASH:0:7}"
-            # Author is the last field
             AUTHOR=$(echo "$LINE" | awk '{print $NF}')
-            # Message is everything between hash and author
             MESSAGE=$(echo "$LINE" | awk '{$1=""; $NF=""; print $0}' | xargs)
             URL="https://github.com/${REPO}/commit/${HASH}"
 
-            # Detect breaking changes (! after type or BREAKING CHANGE footer)
             IS_BREAK=$(echo "$MESSAGE" | grep -cP '^[a-z]+(\([^)]+\))?!:' || true)
             TYPE=$(echo "$MESSAGE" | grep -oP '^[a-z]+(?=(\([^)]+\))?!?:)' || true)
 
-            ENTRY="- [\`${SHORT}\`](${URL}) ${MESSAGE} — **${AUTHOR}**"
+            # Use %s format with the literal dash included in the string —
+            # avoids passing '-' as the first character which bash printf
+            # misinterprets as an option flag when using -- separator.
+            ENTRY=$(printf '%s' "- [\`${SHORT}\`](${URL}) ${MESSAGE} — **${AUTHOR}**")
             COMMIT_LIST_MD="${COMMIT_LIST_MD}${ENTRY}"$'\n'
 
             if [ "$IS_BREAK" -gt 0 ]; then
@@ -184,7 +184,7 @@ jobs:
             esac
           done <<< "$RAW_COMMITS"
 
-          # ── Build prompt for Groq ─────────────────────────────────────────
+          # Build prompt for Groq
           PROMPT="You are a principal software engineer and technical writer. You are writing the official release notes for GeoLocate ${NEXT_VERSION}, a production-grade Paper Minecraft server plugin (1.21.10+, Java 21) that converts Minecraft block coordinates (X/Z) to real-world WGS84 latitude/longitude using configurable Mercator or Linear map projections. The plugin exposes a public Java API, Bukkit events, PlaceholderAPI integration, and a coordinate caching layer backed by StampedLock and ConcurrentHashMap.
 
           Your output will be published verbatim on the GitHub Releases page and read by experienced Java developers integrating this library into their own plugins.
@@ -192,7 +192,7 @@ jobs:
           Hard constraints:
           - Write exactly 3 paragraphs, no headers, no bullet points, no markdown formatting of any kind
           - Each paragraph must contain exactly 4 sentences
-          - Be extremely technical and precise — mention specific class names, method signatures, concurrency primitives, algorithmic changes, or interface contracts where directly relevant
+          - Be extremely technical and precise
           - Mention concrete, observable improvements: thread safety guarantees, cache eviction behavior, API surface changes, event lifecycle, data format compatibility
           - Do not repeat or paraphrase the commit list
           - Do not use emojis, exclamation marks used for excitement, or filler phrases such as 'exciting', 'happy to announce', 'we are pleased'
@@ -218,7 +218,7 @@ jobs:
           Other changes:
           ${OTHER_LIST:-none}"
 
-          # ── Call Groq API ─────────────────────────────────────────────────
+          # Call Groq API with retry
           PAYLOAD=$(jq -n \
             --arg model "llama-3.3-70b-versatile" \
             --arg content "$PROMPT" \
@@ -257,7 +257,7 @@ jobs:
             fi
           fi
 
-          # ── Resolve display name ──────────────────────────────────────────
+          # Resolve display name
           if [ -n "$RELEASE_TITLE" ]; then
             DISPLAY_NAME="$RELEASE_TITLE"
           else
@@ -267,9 +267,9 @@ jobs:
           JITPACK_URL="https://jitpack.io/#${REPO}/${NEXT_VERSION}"
           WIKI_URL="https://github.com/${REPO}/wiki"
 
-          # ── Write release body to temp file ──────────────────────────────
-          BODY_FILE=$(mktemp)
-
+          # write_section prints a markdown section only when CONTENT is non-empty.
+          # The bullet prefix is embedded in the format string to avoid passing
+          # a leading '-' as the first printf argument (bash builtin rejects it).
           write_section() {
             local TITLE="$1"
             local CONTENT="$2"
@@ -277,11 +277,13 @@ jobs:
               printf '#### %s\n' "$TITLE"
               while IFS= read -r ITEM; do
                 [ -z "$ITEM" ] && continue
-                printf -- '- %s\n' "$ITEM"
+                printf '%s\n' "- ${ITEM}"
               done <<< "$CONTENT"
               printf '\n'
             fi
           }
+
+          BODY_FILE=$(mktemp)
 
           {
             printf '%s\n' "$AI_TEXT"
@@ -337,8 +339,8 @@ jobs:
             printf '| Configuration | [Configuration](https://github.com/%s/wiki/Configuration) |\n' "$REPO"
           } > "$BODY_FILE"
 
-          echo "body_file=$BODY_FILE"    >> $GITHUB_OUTPUT
-          echo "display_name=$DISPLAY_NAME" >> $GITHUB_OUTPUT
+          echo "body_file=$BODY_FILE"         >> $GITHUB_OUTPUT
+          echo "display_name=$DISPLAY_NAME"   >> $GITHUB_OUTPUT
 
       - name: Commit version bump
         if: ${{ inputs.dry_run == false }}
