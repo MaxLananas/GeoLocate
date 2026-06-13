@@ -564,19 +564,19 @@ public final class GeoLocateCommand implements CommandExecutor, TabCompleter {
     }
 
     private void sendInfo(CommandSender sender) {
-        sender.sendMessage(mm.deserialize(SEPARATOR));
-        sender.sendMessage(mm.deserialize(
-                HEADER + "<gradient:#00C9FF:#92FE9D>GeoLocate</gradient> "
-                + "<dark_gray>v" + plugin.getDescription().getVersion() + "</dark_gray>"));
-        sender.sendMessage(mm.deserialize(SEPARATOR));
-        sender.sendMessage(mm.deserialize(LBL + "  Worlds     " + VAL + plugin.getWorldMapper().getConfiguredWorldCount() + END));
-        sender.sendMessage(mm.deserialize(LBL + "  Regions    " + VAL + plugin.getAPI().getRegionManager().getRegionCount() + END));
-        sender.sendMessage(mm.deserialize(LBL + "  Decimals   " + VAL + plugin.getGeoConfig().getDecimalPlaces() + END));
-        sender.sendMessage(mm.deserialize(LBL + "  Zoom       " + VAL + plugin.getGeoConfig().getGoogleMapsZoom() + END));
-        sender.sendMessage(mm.deserialize(LBL + "  Cooldown   " + VAL + plugin.getGeoConfig().getCommandCooldownSeconds() + "s" + END));
-        sender.sendMessage(mm.deserialize(LBL + "  ActionBar  " +
-                (plugin.getGeoConfig().isActionBarEnabled() ? "<green>enabled" : "<red>disabled")));
-        sender.sendMessage(mm.deserialize(SEPARATOR));
+       sender.sendMessage(mm.deserialize(SEPARATOR));
+       sender.sendMessage(mm.deserialize(
+             HEADER + "<gradient:#00C9FF:#92FE9D>GeoLocate</gradient> "
+             + "<dark_gray>v" + plugin.getPluginVersion() + "</dark_gray>"));
+       sender.sendMessage(mm.deserialize(SEPARATOR));
+       sender.sendMessage(mm.deserialize(LBL + "  Worlds     " + VAL + plugin.getWorldMapper().getConfiguredWorldCount() + END));
+       sender.sendMessage(mm.deserialize(LBL + "  Regions    " + VAL + plugin.getAPI().getRegionManager().getRegionCount() + END));
+       sender.sendMessage(mm.deserialize(LBL + "  Decimals   " + VAL + plugin.getGeoConfig().getDecimalPlaces() + END));
+       sender.sendMessage(mm.deserialize(LBL + "  Zoom       " + VAL + plugin.getGeoConfig().getGoogleMapsZoom() + END));
+       sender.sendMessage(mm.deserialize(LBL + "  Cooldown   " + VAL + plugin.getGeoConfig().getCommandCooldownSeconds() + "s" + END));
+       sender.sendMessage(mm.deserialize(LBL + "  ActionBar  " +
+             (plugin.getGeoConfig().isActionBarEnabled() ? "<green>enabled" : "<red>disabled")));
+       sender.sendMessage(mm.deserialize(SEPARATOR));
     }
 
     private void send(CommandSender sender, String miniMessage) {
