@@ -7,24 +7,25 @@ import dev.geolocate.mapping.GeoPoint;
 import org.bukkit.Location;
 import org.bukkit.World;
 
-import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 
 public final class WorldMapper {
 
     private final GeoLocate plugin;
-    private final Map<String, CoordinateConverter> converters;
+    private final ConcurrentHashMap<String, CoordinateConverter> converters;
 
     public WorldMapper(GeoLocate plugin) {
         this.plugin = plugin;
-        this.converters = new HashMap<>();
+        this.converters = new ConcurrentHashMap<>();
         initialize();
     }
 
     private void initialize() {
         converters.clear();
-        for (Map.Entry<String, GeoLocateConfig.WorldConfig> entry : plugin.getGeoConfig().getWorldConfigs().entrySet()) {
+        for (Map.Entry<String, GeoLocateConfig.WorldConfig> entry
+                : plugin.getGeoConfig().getWorldConfigs().entrySet()) {
             GeoLocateConfig.WorldConfig wc = entry.getValue();
             CoordinateConverter converter = new CoordinateConverter(
                     wc.getBoundingBox(),
@@ -69,5 +70,10 @@ public final class WorldMapper {
 
     public void clearAllCaches() {
         converters.values().forEach(CoordinateConverter::clearCache);
+    }
+
+    /** Re-initializes all world converters (called on /geoadmin reload). */
+    public void reinitialize() {
+        initialize();
     }
 }
